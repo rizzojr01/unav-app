@@ -3,17 +3,19 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 /// UNav API Service
-/// Provides all necessary methods to interact with the UNav server backend.
-/// All endpoints are asynchronous and return parsed JSON objects or lists.
-/// All methods throw an Exception on unexpected server errors.
+/// Provides all network methods for registration, login, email verification,
+/// navigation, and resource retrieval.
+/// Propagates backend errors as-is for frontend display.
 class ApiService {
   static String _server = "http://unav.zapto.org:5001";
+  static String? _accessToken;
+
+  /// Set the base URL for the backend server.
   static void setServer(String server) {
     _server = server;
   }
-  static String? _accessToken;
 
-  /// Returns headers for standard JSON requests, including Authorization if logged in.
+  /// Returns standard headers for JSON requests.
   static Map<String, String> get _jsonHeaders => {
         "Content-Type": "application/json",
         if (_accessToken != null) "Authorization": "Bearer $_accessToken",
@@ -24,22 +26,41 @@ class ApiService {
         if (_accessToken != null) "Authorization": "Bearer $_accessToken",
       };
 
-  /// Registers a new user.
-  static Future<Map<String, dynamic>> register(String username, String password) async {
+  // ----------- Auth & Registration -----------
+
+  /// Sends a verification code to the given email address.
+  /// Returns: { "msg": ... } or { "error": ... }
+  static Future<Map<String, dynamic>> sendVerificationCode(String email) async {
     final resp = await http.post(
-      Uri.parse('$_server/api/register'),
+      Uri.parse('$_server/api/send_verification_code'),
       headers: _jsonHeaders,
-      body: jsonEncode({"username": username, "password": password}),
+      body: jsonEncode({"email": email}),
     );
     return _parseResponse(resp);
   }
 
-  /// Logs in with username and password. Saves access token for further requests.
-  static Future<Map<String, dynamic>> login(String username, String password) async {
+  /// Registers a new user with email, password, and verification code.
+  /// Returns: { "msg": ..., "id": ... } or { "error": ... }
+  static Future<Map<String, dynamic>> register(String email, String password, String code) async {
+    final resp = await http.post(
+      Uri.parse('$_server/api/register'),
+      headers: _jsonHeaders,
+      body: jsonEncode({
+        "username": email,
+        "password": password,
+        "code": code,
+      }),
+    );
+    return _parseResponse(resp);
+  }
+
+  /// Authenticates a user using email and password. Stores the access token on success.
+  /// Returns: { "access_token": ..., ... } or { "error": ... }
+  static Future<Map<String, dynamic>> login(String email, String password) async {
     final resp = await http.post(
       Uri.parse('$_server/api/login'),
       headers: _jsonHeaders,
-      body: jsonEncode({"username": username, "password": password}),
+      body: jsonEncode({"username": email, "password": password}),
     );
     final data = _parseResponse(resp);
     if (data.containsKey('access_token')) {
@@ -48,7 +69,8 @@ class ApiService {
     return data;
   }
 
-  /// Logs out current user and clears the token.
+  /// Logs out the current user and clears the access token.
+  /// Returns: { "msg": ... } or { "error": ... }
   static Future<Map<String, dynamic>> logout() async {
     final resp = await http.post(
       Uri.parse('$_server/api/logout'),
@@ -58,141 +80,62 @@ class ApiService {
     return _parseResponse(resp);
   }
 
+  // ----------- Navigation Data -----------
+
   /// Fetches the list of available places.
-  /// Returns: List of {"name": ..., "id": ...}
   static Future<List<Map<String, dynamic>>> fetchPlaces() async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "get_places",
-        "inputs": {}
-      }),
-    );
-    final data = _parseResponse(resp);
-    if (data.containsKey('places')) {
-      return List<Map<String, dynamic>>.from(data['places']);
-    }
-    return [];
+    final resp = await _runTask("get_places", {});
+    return List<Map<String, dynamic>>.from(resp["places"] ?? []);
   }
 
-  /// Fetches the list of buildings for a given place.
-  /// Returns: List of {"name": ..., "id": ...}
+  /// Fetches buildings for a selected place.
   static Future<List<Map<String, dynamic>>> fetchBuildings(String placeId) async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "get_buildings",
-        "inputs": {"place": placeId}
-      }),
-    );
-    final data = _parseResponse(resp);
-    if (data.containsKey('buildings')) {
-      return List<Map<String, dynamic>>.from(data['buildings']);
-    }
-    return [];
+    final resp = await _runTask("get_buildings", {"place": placeId});
+    return List<Map<String, dynamic>>.from(resp["buildings"] ?? []);
   }
 
-  /// Fetches the list of floors for a given building.
-  /// Returns: List of {"name": ..., "id": ...}
+  /// Fetches all floors within a building.
   static Future<List<Map<String, dynamic>>> fetchFloors(String placeId, String buildingId) async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "get_floors",
-        "inputs": {"place": placeId, "building": buildingId}
-      }),
-    );
-    final data = _parseResponse(resp);
-    if (data.containsKey('floors')) {
-      return List<Map<String, dynamic>>.from(data['floors']);
-    }
-    return [];
+    final resp = await _runTask("get_floors", {"place": placeId, "building": buildingId});
+    return List<Map<String, dynamic>>.from(resp["floors"] ?? []);
   }
 
-  /// Fetches the list of destinations for a given floor.
-  /// Returns: List of {"name": ..., "id": ...}
+  /// Fetches navigation destinations on a given floor.
   static Future<List<Map<String, dynamic>>> getDestinations(
-    String placeId, String buildingId, String floorId) async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "get_destinations",
-        "inputs": {
-          "place": placeId,
-          "building": buildingId,
-          "floor": floorId
-        }
-      }),
-    );
-    final data = _parseResponse(resp);
-    if (data.containsKey('destinations')) {
-      return List<Map<String, dynamic>>.from(data['destinations']);
-    }
-    return [];
+      String placeId, String buildingId, String floorId) async {
+    final resp = await _runTask("get_destinations", {
+      "place": placeId,
+      "building": buildingId,
+      "floor": floorId,
+    });
+    return List<Map<String, dynamic>>.from(resp["destinations"] ?? []);
   }
 
-  /// Selects a destination by ID.
+  /// Sets the destination for navigation.
   static Future<Map<String, dynamic>> selectDestination(String destId) async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "select_destination",
-        "inputs": {"dest_id": destId}
-      }),
-    );
-    return _parseResponse(resp);
+    return _runTask("select_destination", {"dest_id": destId});
   }
 
-  /// Selects preferred unit (e.g. "feet" or "meter").
+  /// Sets the measurement unit for navigation ("feet" or "meter").
   static Future<Map<String, dynamic>> selectUnit(String unit) async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "select_unit",
-        "inputs": {"unit": unit}
-      }),
-    );
-    return _parseResponse(resp);
+    return _runTask("select_unit", {"unit": unit});
   }
 
-  /// Retrieves the current floorplan image as binary data (Uint8List).
+  /// Retrieves the current floorplan as an image (Uint8List).
   static Future<Uint8List?> getFloorplan() async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "get_floorplan",
-        "inputs": {}
-      }),
-    );
-    final data = _parseResponse(resp);
-    if (data.containsKey('floorplan')) {
-      return base64Decode(data['floorplan']);
+    final resp = await _runTask("get_floorplan", {});
+    if (resp.containsKey("floorplan")) {
+      return base64Decode(resp["floorplan"]);
     }
     return null;
   }
 
   /// Retrieves the scale information for the current floor.
   static Future<Map<String, dynamic>> getScale() async {
-    final resp = await http.post(
-      Uri.parse('$_server/api/run_task'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        "task": "get_scale",
-        "inputs": {}
-      }),
-    );
-    return _parseResponse(resp);
+    return _runTask("get_scale", {});
   }
 
-  /// Uploads a query image for localization and navigation.
-  /// Returns the server response as a JSON map.
+  /// Uploads a query image for localization/navigation and gets the response.
   static Future<Map<String, dynamic>> unavNavigation(Uint8List imageBytes, String filename) async {
     final uri = Uri.parse('$_server/api/run_task');
     final request = http.MultipartRequest('POST', uri)
@@ -200,23 +143,43 @@ class ApiService {
       ..fields['task'] = "unav_navigation"
       ..fields['inputs'] = "{}"
       ..files.add(
-        http.MultipartFile.fromBytes(
-          'file', imageBytes,
-          filename: filename,
-        ),
+        http.MultipartFile.fromBytes('file', imageBytes, filename: filename),
       );
     final resp = await request.send();
     final respBody = await resp.stream.bytesToString();
     return jsonDecode(respBody);
   }
 
-  /// Internal utility to parse HTTP responses.
-  /// Throws Exception on unexpected status.
+  /// Helper for calling unified task-based backend APIs.
+  static Future<Map<String, dynamic>> _runTask(String task, Map<String, dynamic> inputs) async {
+    final resp = await http.post(
+      Uri.parse('$_server/api/run_task'),
+      headers: _jsonHeaders,
+      body: jsonEncode({"task": task, "inputs": inputs}),
+    );
+    return _parseResponse(resp);
+  }
+
+  /// Parses HTTP responses, propagating backend errors as { "error": ... }.
+  /// Only the backend's "error" or "msg" fields will be shown; otherwise, raw body is shown on error.
   static Map<String, dynamic> _parseResponse(http.Response resp) {
-    if (resp.statusCode == 200 || resp.statusCode == 400) {
-      return jsonDecode(resp.body);
-    } else {
-      throw Exception("HTTP ${resp.statusCode}: ${resp.body}");
+    try {
+      final data = jsonDecode(resp.body);
+
+      // If there's an error key, propagate only error string
+      if (data is Map<String, dynamic>) {
+        if (data.containsKey('error')) {
+          return {"error": data['error'].toString()};
+        }
+        // Also propagate backend 'msg' as error if status is not 2xx (e.g., 201 user_exists)
+        if ((resp.statusCode < 200 || resp.statusCode >= 300) && data.containsKey('msg')) {
+          return {"error": data['msg'].toString()};
+        }
+      }
+      return data;
+    } catch (_) {
+      // If JSON decode fails, propagate raw body as error
+      return {"error": resp.body};
     }
   }
 }

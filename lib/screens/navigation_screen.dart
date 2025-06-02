@@ -1,8 +1,14 @@
+// navigation_screen.dart
+
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import '../api/api_service.dart';
+import '../widgets/floorplan_path_painter.dart';
 
+/// NavigationScreen overlays the navigation path over the floorplan,
+/// and displays a floating camera preview for localization input.
 class NavigationScreen extends StatefulWidget {
   final String selectedPlaceId;
   final String selectedPlaceName;
@@ -31,9 +37,13 @@ class NavigationScreen extends StatefulWidget {
 
 class _NavigationScreenState extends State<NavigationScreen> with WidgetsBindingObserver {
   Uint8List? _floorplanBytes;
+  ui.Image? _decodedFloorplanImage;
+  String? _lastMapKey;
   CameraController? _cameraController;
   bool _isCameraInitialized = false;
   bool _isLoading = false;
+  Map<String, dynamic>? _navResultData; // Stores server response (for path, pose, etc.)
+  List<Offset> _currentPath = [];       // Path coordinates for the current floor only
 
   @override
   void initState() {
@@ -50,7 +60,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     super.dispose();
   }
 
-  // 当 App 进入后台/恢复时，要销毁或重建相机资源
+  /// Handles app lifecycle transitions for camera safety.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_cameraController == null || !_cameraController!.value.isInitialized) return;
@@ -61,26 +71,33 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     }
   }
 
-  /// 从后端拉取 Floorplan（字节流）
+  /// Loads the floorplan image from backend.
   Future<void> _fetchFloorplan() async {
     try {
+      // 若 API 支持按楼层取图片，可以直接用 currMapKey
       final fp = await ApiService.getFloorplan();
-      if (mounted) {
-        setState(() {
-          _floorplanBytes = fp;
+      if (fp != null) {
+        decodeImageFromList(fp).then((ui.Image img) {
+          if (mounted) {
+            setState(() {
+            _floorplanBytes = fp;
+            _decodedFloorplanImage = img;
+          });
+          }
         });
       }
     } catch (e) {
-      // 如果拉取失败，可以显示错误占位，这里暂时不处理
       if (mounted) {
         setState(() {
-          _floorplanBytes = null;
-        });
+        _floorplanBytes = null;
+        _decodedFloorplanImage = null;
+      });
       }
     }
   }
 
-  /// 初始化相机，用于预览和拍照
+
+  /// Initializes the camera for preview/capture.
   Future<void> _initCamera() async {
     try {
       final cameras = await availableCameras();
@@ -102,185 +119,173 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isCameraInitialized = false;
-        });
-      }
+      if (mounted) setState(() => _isCameraInitialized = false);
     }
   }
 
-  /// 拍照并上传到 server 进行导航
+  /// Captures an image, sends it to the backend, and updates navigation path for the current floor.
   Future<void> _captureAndSend() async {
     if (_isLoading || !_isCameraInitialized || _cameraController == null) return;
     setState(() => _isLoading = true);
     try {
       final file = await _cameraController!.takePicture();
       final bytes = await file.readAsBytes();
-      await ApiService.unavNavigation(bytes, "query.jpg");
-      // 如果需要 TTS 或者可视化处理导航结果，在这里处理即可
-    } catch (e) {
-      // 打印或忽略异常
-    } finally {
+      final result = await ApiService.unavNavigation(bytes, "query.jpg");
       if (mounted) {
-        setState(() => _isLoading = false);
+        // Parse all path segments by floor.
+        final List<dynamic> pathKeys = result["result"]?["path_keys"] ?? [];
+        final List<dynamic> pathCoords = result["result"]?["path_coords"] ?? [];
+        final floorSegs = splitPathByFloor(pathKeys, pathCoords);
+
+        // Use the best_map_key from server as the current floor key.
+        // It may be a List or a Tuple encoded as List.
+        final dynamic bestMapKey = result["best_map_key"];
+        final String currMapKey = (bestMapKey as List).take(3).join('|');
+        // Only fetch floorplan if mapKey changed
+        if (currMapKey != _lastMapKey) {
+          await _fetchFloorplan();
+          _lastMapKey = currMapKey;
+        }
+
+        setState(() {
+          _navResultData = result;
+          _currentPath = floorSegs[currMapKey] ?? [];
+        });
       }
+      // Optionally: handle navigation instructions (TTS or visual) here.
+    } catch (e) {
+      // Optionally: show error message or retry.
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  /// 返回一个用于悬浮在右下角的“Camera Preview” widget
-  ///
-  /// 1. 如果是 portrait（竖屏），需要旋转 90°，并构造一个 “高>宽” 的框
-  /// 2. 如果是 landscape（横屏），直接使用原始横向比例即可
+  /// Builds the floating camera preview widget for the bottom-right corner.
   Widget _buildCameraPreview(Orientation orientation) {
     if (!_isCameraInitialized || _cameraController == null) {
-      // 未就绪时显示占位
-      if (orientation == Orientation.portrait) {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            color: Colors.black38,
-            width: 120,
-            height: 160,
-            child: const Center(
-              child: Icon(Icons.videocam_off, color: Colors.white),
-            ),
+      // Show a placeholder if the camera is not ready.
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          color: Colors.black38,
+          width: orientation == Orientation.portrait ? 120 : 160,
+          height: orientation == Orientation.portrait ? 160 : 120,
+          child: const Center(
+            child: Icon(Icons.videocam_off, color: Colors.white),
           ),
-        );
-      } else {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            color: Colors.black38,
-            width: 160,
-            height: 120,
-            child: const Center(
-              child: Icon(Icons.videocam_off, color: Colors.white),
-            ),
-          ),
-        );
-      }
+        ),
+      );
     }
 
-    // 已初始化：获取相机实际预览的宽高比（一般为 4/3 或者 16/9 等）
     final previewSize = _cameraController!.value.previewSize;
     if (previewSize == null) {
-      // 万一为空，仍然给一个默认占位
-      if (orientation == Orientation.portrait) {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            color: Colors.black38,
-            width: 120,
-            height: 160,
-            child: const Center(
-              child: Icon(Icons.videocam_off, color: Colors.white),
-            ),
-          ),
-        );
-      } else {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            color: Colors.black38,
-            width: 160,
-            height: 120,
-            child: const Center(
-              child: Icon(Icons.videocam_off, color: Colors.white),
-            ),
-          ),
-        );
-      }
-    }
-
-    // 原始预览比例 (宽 / 高)，通常 sensor 默认是横向
-    final double rawAspectRatio = previewSize.width / previewSize.height;
-
-    if (orientation == Orientation.portrait) {
-      final double H = 200; // 竖屏窗口高度
-      final double aspectRatio = previewSize.height / previewSize.width; // 注意这里反过来
-      final double origWidth = H * aspectRatio; // 竖屏下: 宽=高*竖直方向的宽高比
-      final double origHeight = H;
-
-      return GestureDetector(
-        onTap: _captureAndSend,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            width: origWidth,
-            height: origHeight,
-            color: Colors.black,
-            child: CameraPreview(_cameraController!),
-          ),
-        ),
-      );
-    } else {
-      // -------- 横屏：直接使用横向预览比例 --------
-      // 选一个固定“窗口宽度”，比如 200。预览画面原本就是横向，所以：
-      // previewWidth = W, previewHeight = W / rawAspectRatio
-      final double W = 200;
-      final double origWidth = W;
-      final double origHeight = W / rawAspectRatio;
-
-      return GestureDetector(
-        onTap: _captureAndSend,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            width: origWidth,
-            height: origHeight,
-            color: Colors.black,
-            child: CameraPreview(_cameraController!),
+      // Defensive: show placeholder.
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          color: Colors.black38,
+          width: orientation == Orientation.portrait ? 120 : 160,
+          height: orientation == Orientation.portrait ? 160 : 120,
+          child: const Center(
+            child: Icon(Icons.videocam_off, color: Colors.white),
           ),
         ),
       );
     }
+
+    // Choose correct aspect ratio for preview window.
+    final double aspectRatio = orientation == Orientation.portrait
+        ? previewSize.height / previewSize.width
+        : previewSize.width / previewSize.height;
+    final double base = 200.0; // Base window size.
+    final double width = orientation == Orientation.portrait ? base * aspectRatio : base;
+    final double height = orientation == Orientation.portrait ? base : base / aspectRatio;
+
+    return GestureDetector(
+      onTap: _captureAndSend,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          width: width,
+          height: height,
+          color: Colors.black,
+          child: CameraPreview(_cameraController!),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final orientation = MediaQuery.of(context).orientation;
 
+    // Main layout: overlays camera preview and path painter on top of floorplan background.
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // ---------------- Floorplan（底部背景） ----------------
-          if (_floorplanBytes != null)
-            Image.memory(
-              _floorplanBytes!,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              height: double.infinity,
-            )
-          else
-            Container(color: Colors.grey[200]),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final double canvasWidth = constraints.maxWidth;
+          final double canvasHeight = constraints.maxHeight;
+          return Stack(
+              fit: StackFit.expand,
+              children: [
+                // 1. 包裹 floorplan image + path painter 区域
+                GestureDetector(
+                  onTap: _captureAndSend,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // ---- Floorplan background ----
+                      if (_floorplanBytes != null)
+                        Image.memory(
+                          _floorplanBytes!,
+                          fit: BoxFit.cover,
+                          width: double.infinity,
+                          height: double.infinity,
+                        )
+                      else
+                        Container(color: Colors.grey[200]),
 
-          // ------------- Camera Preview 悬浮在右下角 -------------
-          Positioned(
-            bottom: 24,
-            right: 16,
-            child: _buildCameraPreview(orientation),
-          ),
+                      // ---- Path overlay (current floor only) ----
+                      if (_currentPath.isNotEmpty && _decodedFloorplanImage != null)
+                        CustomPaint(
+                          size: Size(canvasWidth, canvasHeight),
+                          painter: FloorplanPathPainter(
+                            pathPoints: _currentPath,
+                            floorplanImage: _decodedFloorplanImage,
+                            headingAngleDeg: _navResultData?['floorplan_pose']?['ang']?.toDouble(),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
 
-          // -------------------- Loading 指示器 --------------------
-          if (_isLoading)
-            const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            ),
+                // 2. ---- Camera preview floating window ----
+                Positioned(
+                  bottom: 24,
+                  right: 16,
+                  child: _buildCameraPreview(orientation),
+                ),
 
-          // -------------------- 返回按钮 --------------------
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topLeft,
-              child: IconButton(
-                icon: const Icon(Icons.arrow_back, size: 32, color: Colors.black87),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ),
-          ),
-        ],
+                // 3. ---- Loading indicator ----
+                if (_isLoading)
+                  const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  ),
+
+                // 4. ---- Back button ----
+                SafeArea(
+                  child: Align(
+                    alignment: Alignment.topLeft,
+                    child: IconButton(
+                      icon: const Icon(Icons.arrow_back, size: 32, color: Colors.black87),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ),
+                ),
+              ],
+            );
+        },
       ),
     );
   }

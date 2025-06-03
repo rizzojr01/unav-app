@@ -20,7 +20,7 @@ class FloorSelectScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return SelectScreen(
       title: "Select Floor",
-      promptText: "Please select a floor.",
+      selectionType: "floor",
       fetchOptions: () async {
         final floors = await ApiService.fetchFloors(selectedPlaceId, selectedBuildingId);
         return floors.map((e) => e['name'].toString()).toList();

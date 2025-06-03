@@ -121,6 +121,11 @@ class ApiService {
     return _runTask("select_unit", {"unit": unit});
   }
 
+  /// Sets the user's preferred language for all API responses (to be handled server-side).
+  static Future<Map<String, dynamic>> selectLanguage(String languageCode) async {
+    return _runTask("select_language", {"language": languageCode});
+  }
+  
   /// Retrieves the current floorplan as an image (Uint8List).
   static Future<Uint8List?> getFloorplan() async {
     final resp = await _runTask("get_floorplan", {});

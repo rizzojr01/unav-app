@@ -1,21 +1,48 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../services/tts_service.dart';
+import '../providers/settings_provider.dart';
 
 typedef FutureListString = Future<List<String>> Function();
 typedef OnSelectCallback = void Function(String selected);
+const Map<String, Map<String, String>> selectionPrompts = {
+  'place': {
+    'en': "Please select a place.",
+    'zh': "请选择地点",
+    'th': "โปรดเลือกสถานที่",
+  },
+  'building': {
+    'en': "Please select a building.",
+    'zh': "请选择楼宇",
+    'th': "โปรดเลือกอาคาร",
+  },
+  'floor': {
+    'en': "Please select a floor.",
+    'zh': "请选择楼层",
+    'th': "โปรดเลือกชั้น",
+  },
+  'destination': {
+    'en': "Please select a destination.",
+    'zh': "请选择目的地",
+    'th': "โปรดเลือกจุดหมาย",
+  },
+};
+
 
 class SelectScreen extends StatefulWidget {
-  final String title;               // 页面标题
-  final String promptText;          // 语音/页面提示文本
-  final FutureListString fetchOptions; // 异步加载选项的方法
-  final OnSelectCallback onSelect;      // 选中后的回调
+  final String title;
+  final String selectionType; // 'place'/'building'/'floor'/'destination'
+  final FutureListString fetchOptions;
+  final OnSelectCallback onSelect;
+  final String? customSelectionPrompt;
 
   const SelectScreen({
     super.key,
     required this.title,
-    required this.promptText,
+    required this.selectionType,
     required this.fetchOptions,
     required this.onSelect,
+    this.customSelectionPrompt,
   });
 
   @override
@@ -29,10 +56,26 @@ class _SelectScreenState extends State<SelectScreen> {
   @override
   void initState() {
     super.initState();
-    TTSService.speak(widget.promptText);
+    _speakPrompt();
     _loadOptions();
   }
 
+  String _getPromptText(String lang) {
+    // Fallback to English if not found
+    return selectionPrompts[widget.selectionType]?[lang] ??
+        selectionPrompts[widget.selectionType]?['en'] ??
+        "";
+  }
+
+  Future<void> _speakPrompt() async {
+    final lang = context.read<SettingsProvider>().languageCode;
+    final prompt = _getPromptText(lang);
+    await TTSService.setLanguage(lang);
+    await TTSService.speak(prompt);
+  }
+
+
+  /// Load selectable options asynchronously.
   Future<void> _loadOptions() async {
     var result = await widget.fetchOptions();
     setState(() {
@@ -41,8 +84,28 @@ class _SelectScreenState extends State<SelectScreen> {
     });
   }
 
-  void _handleSelect(String val) {
-    TTSService.speak("You selected $val");
+  /// Generate a default selection prompt in the user's language.
+  String _getSelectionPrompt(String val, String lang) {
+    if (widget.customSelectionPrompt != null) {
+      // If a custom prompt is provided, use it.
+      return widget.customSelectionPrompt!.replaceAll(r"{val}", val);
+    }
+    switch (lang) {
+      case 'zh':
+        return "你选择了 $val";
+      case 'th':
+        return "คุณเลือก $val"; // Thai for "You selected"
+      case 'en':
+      default:
+        return "You selected $val";
+    }
+  }
+
+  /// Handles item selection: speak and invoke callback.
+  Future<void> _handleSelect(String val) async {
+    final lang = context.read<SettingsProvider>().languageCode;
+    await TTSService.setLanguage(lang);
+    await TTSService.speak(_getSelectionPrompt(val, lang));
     widget.onSelect(val);
   }
 
@@ -63,9 +126,6 @@ class _SelectScreenState extends State<SelectScreen> {
           return ListTile(
             title: Text(option, style: const TextStyle(fontSize: 28)),
             onTap: () => _handleSelect(option),
-            onLongPress: () {
-              // 这里可以扩展为语音输入
-            },
           );
         },
       ),

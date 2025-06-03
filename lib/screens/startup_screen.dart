@@ -1,12 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 import '../api/api_service.dart';
 import 'place_select_screen.dart';
+import '../providers/settings_provider.dart';
 
-/// UNav Startup Screen
-/// - Supports login and registration with email, password, confirm password, and verification code.
-/// - Professional state and error management. Remembers last-used credentials and auto-fills login form.
 class StartupScreen extends StatefulWidget {
   const StartupScreen({super.key});
 
@@ -15,46 +14,49 @@ class StartupScreen extends StatefulWidget {
 }
 
 class _StartupScreenState extends State<StartupScreen> {
-  // --- Controllers for login/register ---
+  // Controllers for login/register fields
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _loginPwdController = TextEditingController();
-
   final TextEditingController _regEmailController = TextEditingController();
   final TextEditingController _regPwdController = TextEditingController();
   final TextEditingController _regPwd2Controller = TextEditingController();
   final TextEditingController _regCodeController = TextEditingController();
 
-  // --- UI State ---
+  // UI State
   String? _serverAddress;
   String? _errorMsg;
   String? _regPwdMismatchMsg;
   String? _regCodeMsg;
   bool _isLoading = false;
-  bool _registerMode = false;   // false=login, true=register
-  String _unit = "feet";
+  bool _registerMode = false;
 
-  // --- Verification code countdown state ---
+  // Verification code
   bool _codeSent = false;
   int _codeTimeout = 0;
   Timer? _timer;
 
-  // --- Register form field validity ---
   bool _isRegFormValid = false;
   bool _isCodeFilled = false;
+
+  final List<Map<String, String>> _languages = [
+    {'code': 'en', 'name': 'English'},
+    {'code': 'zh', 'name': '中文'},
+    {'code': 'th', 'name': 'ไทย'},
+  ];
 
   @override
   void initState() {
     super.initState();
     _loadServerAddress();
     _loadCredentials();
-    // Live validation for register form
+    _loadUnitAndLanguageToProvider();
     _regPwdController.addListener(_validateRegisterForm);
     _regPwd2Controller.addListener(_validateRegisterForm);
     _regEmailController.addListener(_validateRegisterForm);
     _regCodeController.addListener(_validateRegisterForm);
   }
 
-  /// Loads the server address from local storage and configures ApiService.
+  /// Load server address
   Future<void> _loadServerAddress() async {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString("server_address") ?? "http://unav.zapto.org:5001";
@@ -62,7 +64,7 @@ class _StartupScreenState extends State<StartupScreen> {
     setState(() => _serverAddress = saved);
   }
 
-  /// Saves the server address to local storage and configures ApiService.
+  /// Save server address
   Future<void> _saveServerAddress(String addr) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString("server_address", addr);
@@ -70,7 +72,7 @@ class _StartupScreenState extends State<StartupScreen> {
     setState(() => _serverAddress = addr);
   }
 
-  /// Loads last-used credentials from local storage and auto-fills login form.
+  /// Load credentials from local storage
   Future<void> _loadCredentials() async {
     final prefs = await SharedPreferences.getInstance();
     final email = prefs.getString('saved_email');
@@ -80,26 +82,41 @@ class _StartupScreenState extends State<StartupScreen> {
         _emailController.text = email;
         _loginPwdController.text = pwd;
       });
-      // // Optional: auto-login on app start (uncomment below if needed)
-      // // await _handleLogin();
     }
   }
 
-  /// Saves credentials to local storage for auto-fill next time.
+  /// Save credentials to local storage (for auto-fill)
   Future<void> _saveCredentials(String email, String password) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('saved_email', email);
     await prefs.setString('saved_password', password);
   }
 
-  /// Clears saved credentials, e.g. on logout.
+  /// Clear saved credentials (for logout etc)
   Future<void> _clearCredentials() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('saved_email');
     await prefs.remove('saved_password');
   }
 
-  /// Switches between login/register mode and resets state.
+  /// Loads saved unit and language from storage into Provider
+  Future<void> _loadUnitAndLanguageToProvider() async {
+    final prefs = await SharedPreferences.getInstance();
+    final unit = prefs.getString('saved_unit') ?? "feet";
+    final lang = prefs.getString('saved_language') ?? "en";
+    final provider = context.read<SettingsProvider>();
+    provider.setAll(language: lang, unit: unit);
+  }
+
+  /// Saves current unit and language from Provider to local storage
+  Future<void> _saveUnitAndLanguageFromProvider() async {
+    final prefs = await SharedPreferences.getInstance();
+    final provider = context.read<SettingsProvider>();
+    await prefs.setString('saved_unit', provider.unit);
+    await prefs.setString('saved_language', provider.languageCode);
+  }
+
+  /// Switches between login and register modes
   void _switchMode(bool toRegister) {
     setState(() {
       _registerMode = toRegister;
@@ -118,14 +135,7 @@ class _StartupScreenState extends State<StartupScreen> {
     });
   }
 
-  /// Toggles navigation unit between feet and meter.
-  void _toggleUnit() {
-    setState(() {
-      _unit = _unit == "feet" ? "meter" : "feet";
-    });
-  }
-
-  /// Sends the verification code to the entered email using backend API.
+  /// Sends verification code
   Future<void> _sendVerificationCode() async {
     final email = _regEmailController.text.trim();
     if (!email.contains('@')) {
@@ -164,13 +174,14 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  /// Handles login: displays backend error in red if present.
+  /// Handles login (Provider: global language/unit)
   Future<void> _handleLogin() async {
     setState(() {
       _isLoading = true;
       _errorMsg = null;
     });
     await _saveServerAddress(_serverAddress ?? "http://unav.zapto.org:5001");
+    final provider = context.read<SettingsProvider>();
     try {
       final resp = await ApiService.login(
         _emailController.text.trim(),
@@ -183,8 +194,10 @@ class _StartupScreenState extends State<StartupScreen> {
         });
         return;
       }
-      await _saveCredentials(_emailController.text.trim(), _loginPwdController.text); // Save credentials
-      await ApiService.selectUnit(_unit);
+      await _saveCredentials(_emailController.text.trim(), _loginPwdController.text);
+      await ApiService.selectUnit(provider.unit);
+      await ApiService.selectLanguage(provider.languageCode);
+      await _saveUnitAndLanguageFromProvider();
       if (context.mounted) {
         Navigator.pushReplacement(
           context,
@@ -199,7 +212,7 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  /// Handles registration: error/success/auto-login, save credentials
+  /// Handles registration
   Future<void> _handleRegister() async {
     setState(() {
       _isLoading = true;
@@ -209,7 +222,6 @@ class _StartupScreenState extends State<StartupScreen> {
     });
 
     if (!_isRegFormValid || !_isCodeFilled) {
-      // Should never hit this, button应已禁用
       setState(() {
         _errorMsg = "Please complete the form correctly.";
         _isLoading = false;
@@ -218,6 +230,7 @@ class _StartupScreenState extends State<StartupScreen> {
     }
 
     await _saveServerAddress(_serverAddress ?? "http://unav.zapto.org:5001");
+    final provider = context.read<SettingsProvider>();
     try {
       final resp = await ApiService.register(
         _regEmailController.text.trim(),
@@ -226,7 +239,6 @@ class _StartupScreenState extends State<StartupScreen> {
       );
       if (resp.containsKey("error")) {
         setState(() {
-          // 验证码问题直接出现在验证码栏，其它通用错误显示到顶部
           if (resp["error"] == "invalid_or_expired_code") {
             _regCodeMsg = "Invalid or expired verification code.";
           } else if (resp["error"] == "user_exists") {
@@ -238,7 +250,6 @@ class _StartupScreenState extends State<StartupScreen> {
         });
         return;
       }
-      // Auto-login after successful register
       final loginResp = await ApiService.login(
         _regEmailController.text.trim(),
         _regPwdController.text,
@@ -250,8 +261,10 @@ class _StartupScreenState extends State<StartupScreen> {
         });
         return;
       }
-      await _saveCredentials(_regEmailController.text.trim(), _regPwdController.text); // Save credentials
-      await ApiService.selectUnit(_unit);
+      await _saveCredentials(_regEmailController.text.trim(), _regPwdController.text);
+      await ApiService.selectUnit(provider.unit);
+      await ApiService.selectLanguage(provider.languageCode);
+      await _saveUnitAndLanguageFromProvider();
       if (context.mounted) {
         Navigator.pushReplacement(
           context,
@@ -266,7 +279,7 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  /// Realtime validate register form: checks password match, non-empty, valid email etc.
+  /// Register form live validation
   void _validateRegisterForm() {
     String email = _regEmailController.text.trim();
     String pwd1 = _regPwdController.text;
@@ -286,7 +299,6 @@ class _StartupScreenState extends State<StartupScreen> {
 
   /// Converts backend error code to human readable string.
   String _backendErrorToText(String error) {
-    // Only convert codes, don't hide generic error text!
     switch (error) {
       case "user_exists":
         return "User already exists.";
@@ -299,7 +311,7 @@ class _StartupScreenState extends State<StartupScreen> {
       case "invalid_email":
         return "Invalid email address.";
       default:
-        return error; // Pass-through other backend error text
+        return error;
     }
   }
 
@@ -315,7 +327,6 @@ class _StartupScreenState extends State<StartupScreen> {
     super.dispose();
   }
 
-  /// Main UI: switches between login/register mode.
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -351,7 +362,6 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
-  /// Login form (email, password)
   Widget _buildLoginForm() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
@@ -379,6 +389,9 @@ class _StartupScreenState extends State<StartupScreen> {
         ),
         const SizedBox(height: 20),
         _unitSelector(),
+        const SizedBox(height: 12),
+        _languageSelector(),
+        const SizedBox(height: 12),
         if (_errorMsg != null)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -393,7 +406,6 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
-  /// Register form (email, password, repeat, code), disables buttons if invalid.
   Widget _buildRegisterForm() {
     final sendCodeEnabled = _isRegFormValid && !_codeSent && _codeTimeout == 0;
     final registerEnabled = _isRegFormValid && _isCodeFilled && !_isLoading;
@@ -463,6 +475,9 @@ class _StartupScreenState extends State<StartupScreen> {
           ),
         const SizedBox(height: 20),
         _unitSelector(),
+        const SizedBox(height: 12),
+        _languageSelector(),
+        const SizedBox(height: 12),
         if (_errorMsg != null)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -477,26 +492,50 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
-  /// Widget to select navigation unit.
   Widget _unitSelector() {
+    final provider = context.watch<SettingsProvider>();
     return Row(
       children: [
         const Text("Unit:", style: TextStyle(fontSize: 18)),
         const SizedBox(width: 8),
         OutlinedButton(
-          onPressed: _toggleUnit,
+          onPressed: () => provider.setUnit('feet'),
           style: OutlinedButton.styleFrom(
-            backgroundColor: _unit == "feet" ? Colors.blueAccent : Colors.transparent,
+            backgroundColor: provider.unit == "feet" ? Colors.blueAccent : Colors.transparent,
           ),
-          child: Text("Feet", style: TextStyle(color: _unit == "feet" ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
+          child: Text("Feet", style: TextStyle(color: provider.unit == "feet" ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
         ),
         const SizedBox(width: 8),
         OutlinedButton(
-          onPressed: _toggleUnit,
+          onPressed: () => provider.setUnit('meter'),
           style: OutlinedButton.styleFrom(
-            backgroundColor: _unit == "meter" ? Colors.blueAccent : Colors.transparent,
+            backgroundColor: provider.unit == "meter" ? Colors.blueAccent : Colors.transparent,
           ),
-          child: Text("Meter", style: TextStyle(color: _unit == "meter" ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
+          child: Text("Meter", style: TextStyle(color: provider.unit == "meter" ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
+        ),
+      ],
+    );
+  }
+
+  Widget _languageSelector() {
+    final provider = context.watch<SettingsProvider>();
+    return Row(
+      children: [
+        const Text("Language:", style: TextStyle(fontSize: 18)),
+        const SizedBox(width: 8),
+        DropdownButton<String>(
+          value: provider.languageCode,
+          items: _languages.map((lang) {
+            return DropdownMenuItem(
+              value: lang['code'],
+              child: Text(lang['name'] ?? ""),
+            );
+          }).toList(),
+          onChanged: (String? value) {
+            if (value != null) {
+              provider.setLanguage(value);
+            }
+          },
         ),
       ],
     );

@@ -16,7 +16,7 @@ class BuildingSelectScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return SelectScreen(
       title: "Select Building",
-      promptText: "Please select a building.",
+      selectionType: "building",
       fetchOptions: () async {
         final buildings = await ApiService.fetchBuildings(selectedPlaceId);
         return buildings.map((e) => e['name'].toString()).toList();

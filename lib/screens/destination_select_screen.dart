@@ -25,7 +25,7 @@ class DestinationSelectScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return SelectScreen(
       title: "Select Destination",
-      promptText: "Please select a destination.",
+      selectionType: "destination",
       fetchOptions: () async {
         // Fetch destinations only once
         final dests = await ApiService.getDestinations(

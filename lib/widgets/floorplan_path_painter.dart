@@ -32,6 +32,15 @@ class FloorplanPathPainter extends CustomPainter {
     final double canvasW = size.width;
     final double canvasH = size.height;
 
+    double clampSafe(double value, double min, double max) {
+      if (min > max) {
+        // 如果 min 比 max 大，直接返回 max（此时 offset 应该是0）
+        return max;
+      }
+      if (value.isNaN || value.isInfinite) return max;
+      return value.clamp(min, max);
+    }
+
     // Always show the floorplan background, even if no path.
     if (pathPoints.isEmpty) {
       _drawFloorplan(canvas, imgW, imgH, canvasW, canvasH, Offset.zero, 1.0);
@@ -54,8 +63,8 @@ class FloorplanPathPainter extends CustomPainter {
     double minOffsetY = canvasH - displayH;
     double maxOffsetY = 0.0;
     offset = Offset(
-      offset.dx.clamp(minOffsetX, maxOffsetX),
-      offset.dy.clamp(minOffsetY, maxOffsetY),
+        clampSafe(offset.dx, minOffsetX, maxOffsetX),
+        clampSafe(offset.dy, minOffsetY, maxOffsetY),
     );
 
     // 4. Draw the cropped floorplan region that appears in the current canvas

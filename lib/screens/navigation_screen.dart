@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import '../api/api_service.dart';
 import '../widgets/floorplan_path_painter.dart';
 import '../services/tts_service.dart';
@@ -173,6 +174,16 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     return result;
   }
 
+  Future<Uint8List> fixImageOrientation(Uint8List imageBytes) async {
+    final result = await FlutterImageCompress.compressWithList(
+      imageBytes,
+      format: CompressFormat.jpeg,
+      quality: 99,
+      autoCorrectionAngle: true,
+    );
+    return result;
+  }
+
   /// Determines if the command is a "turn" (direction adjustment).
   bool _isTurnCmd(String cmd, String lang) {
     final keys = turnKeywords[lang] ?? turnKeywords['en']!;
@@ -190,8 +201,9 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
 
     try {
       final file = await _cameraController!.takePicture();
-      final bytes = await file.readAsBytes();
-      final result = await ApiService.unavNavigation(bytes, "query.jpg");
+      final rawBytes = await file.readAsBytes();
+      final fixedBytes = await fixImageOrientation(rawBytes);
+      final result = await ApiService.unavNavigation(fixedBytes, "query.jpg");
 
       if (!mounted) return;
 

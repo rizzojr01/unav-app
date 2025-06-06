@@ -116,6 +116,16 @@ class ApiService {
     return _runTask("select_destination", {"dest_id": destId});
   }
 
+  /// Retrieves the scale value (meters or feet per pixel) for the user's current floor.
+  /// Returns { "scale": double } or { "error": ... }
+  static Future<double?> getCurrentFloorScale() async {
+    final resp = await getScale();
+    if (resp.containsKey('scale')) {
+      return (resp['scale'] as num).toDouble();
+    }
+    return null;
+  }
+
   /// Sets the measurement unit for navigation ("feet" or "meter").
   static Future<Map<String, dynamic>> selectUnit(String unit) async {
     return _runTask("select_unit", {"unit": unit});

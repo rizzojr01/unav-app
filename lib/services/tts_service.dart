@@ -9,8 +9,9 @@ class TTSService {
   static Future<void> setLanguage(String langCode) async {
     // Map 'en', 'zh', 'th' to system locale string
     String locale = 'en-US';
-    if (langCode == 'zh') locale = 'zh-CN';
-    else if (langCode == 'th') locale = 'th-TH';
+    if (langCode == 'zh') {
+      locale = 'zh-CN';
+    } else if (langCode == 'th') locale = 'th-TH';
     _currentLang = locale;
     await _tts.setLanguage(locale);
   }

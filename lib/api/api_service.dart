@@ -3,8 +3,8 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 /// UNav API Service
-/// Provides all network methods for registration, login, email verification,
-/// navigation, and resource retrieval.
+/// Provides all network methods for registration, login, profile management,
+/// email verification, navigation, and resource retrieval.
 /// Propagates backend errors as-is for frontend display.
 class ApiService {
   static String _server = "http://unav.zapto.org:5001";
@@ -28,7 +28,7 @@ class ApiService {
 
   // ----------- Auth & Registration -----------
 
-  /// Sends a verification code to the given email address.
+  /// Sends a verification code to the given email address for registration or password reset.
   /// Returns: { "msg": ... } or { "error": ... }
   static Future<Map<String, dynamic>> sendVerificationCode(String email) async {
     final resp = await http.post(
@@ -39,14 +39,20 @@ class ApiService {
     return _parseResponse(resp);
   }
 
-  /// Registers a new user with email, password, and verification code.
+  /// Registers a new user with email, nickname, password, and verification code.
   /// Returns: { "msg": ..., "id": ... } or { "error": ... }
-  static Future<Map<String, dynamic>> register(String email, String password, String code) async {
+  static Future<Map<String, dynamic>> register(
+    String email,
+    String nickname,
+    String password,
+    String code,
+  ) async {
     final resp = await http.post(
       Uri.parse('$_server/api/register'),
       headers: _jsonHeaders,
       body: jsonEncode({
-        "username": email,
+        "email": email,
+        "nickname": nickname,
         "password": password,
         "code": code,
       }),
@@ -55,12 +61,12 @@ class ApiService {
   }
 
   /// Authenticates a user using email and password. Stores the access token on success.
-  /// Returns: { "access_token": ..., ... } or { "error": ... }
+  /// Returns: { "access_token": ..., "nickname": ..., ... } or { "error": ... }
   static Future<Map<String, dynamic>> login(String email, String password) async {
     final resp = await http.post(
       Uri.parse('$_server/api/login'),
       headers: _jsonHeaders,
-      body: jsonEncode({"username": email, "password": password}),
+      body: jsonEncode({"email": email, "password": password}),
     );
     final data = _parseResponse(resp);
     if (data.containsKey('access_token')) {
@@ -80,6 +86,70 @@ class ApiService {
     return _parseResponse(resp);
   }
 
+  // ----------- Profile Management -----------
+
+  /// Uploads avatar image to server for the specified email.
+  /// Returns: { "url": ... } or { "error": ... }
+  static Future<Map<String, dynamic>> uploadAvatar(
+    Uint8List imageBytes,
+    String filename,
+    String email,
+  ) async {
+    final uri = Uri.parse('$_server/api/upload_avatar');
+    final request = http.MultipartRequest('POST', uri)
+      ..headers.addAll(_multipartHeaders)
+      ..fields['email'] = email
+      ..files.add(
+        http.MultipartFile.fromBytes('file', imageBytes, filename: filename),
+      );
+    final resp = await request.send();
+    final respBody = await resp.stream.bytesToString();
+    return jsonDecode(respBody);
+  }
+
+  /// Updates the user's nickname by email.
+  /// Returns: { "msg": ... } or { "error": ... }
+  static Future<Map<String, dynamic>> updateNickname(String email, String nickname) async {
+    final resp = await http.post(
+      Uri.parse('$_server/api/update_nickname'),
+      headers: _jsonHeaders,
+      body: jsonEncode({"email": email, "nickname": nickname}),
+    );
+    return _parseResponse(resp);
+  }
+
+  // ----------- Password Reset -----------
+
+  /// Sends a verification code for password reset to the user's email.
+  /// Returns: { "msg": ... } or { "error": ... }
+  static Future<Map<String, dynamic>> sendPasswordResetCode(String email) async {
+    final resp = await http.post(
+      Uri.parse('$_server/api/send_password_reset_code'),
+      headers: _jsonHeaders,
+      body: jsonEncode({"email": email}),
+    );
+    return _parseResponse(resp);
+  }
+
+  /// Resets user's password given email, verification code, and new password.
+  /// Returns: { "msg": ... } or { "error": ... }
+  static Future<Map<String, dynamic>> resetPassword(
+    String email,
+    String code,
+    String newPassword,
+  ) async {
+    final resp = await http.post(
+      Uri.parse('$_server/api/reset_password'),
+      headers: _jsonHeaders,
+      body: jsonEncode({
+        "email": email,
+        "code": code,
+        "new_password": newPassword,
+      }),
+    );
+    return _parseResponse(resp);
+  }
+
   // ----------- Navigation Data -----------
 
   /// Fetches the list of available places.
@@ -95,14 +165,20 @@ class ApiService {
   }
 
   /// Fetches all floors within a building.
-  static Future<List<Map<String, dynamic>>> fetchFloors(String placeId, String buildingId) async {
+  static Future<List<Map<String, dynamic>>> fetchFloors(
+    String placeId,
+    String buildingId,
+  ) async {
     final resp = await _runTask("get_floors", {"place": placeId, "building": buildingId});
     return List<Map<String, dynamic>>.from(resp["floors"] ?? []);
   }
 
   /// Fetches navigation destinations on a given floor.
   static Future<List<Map<String, dynamic>>> getDestinations(
-      String placeId, String buildingId, String floorId) async {
+    String placeId,
+    String buildingId,
+    String floorId,
+  ) async {
     final resp = await _runTask("get_destinations", {
       "place": placeId,
       "building": buildingId,
@@ -135,7 +211,7 @@ class ApiService {
   static Future<Map<String, dynamic>> selectLanguage(String languageCode) async {
     return _runTask("select_language", {"language": languageCode});
   }
-  
+
   /// Retrieves the current floorplan as an image (Uint8List).
   static Future<Uint8List?> getFloorplan() async {
     final resp = await _runTask("get_floorplan", {});

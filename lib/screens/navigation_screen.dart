@@ -148,8 +148,8 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       final fixedBytes = await fixImageOrientation(rawBytes);
       final result = await ApiService.unavNavigation(fixedBytes, 'query.jpg');
       if (!mounted) return;
-      if (result.containsKey('error')) {
-        await _handleError(result['error']?.toString());
+      if (result['success'] != true) {
+        await _handleError(result['error']?.toString() ?? 'Unknown error');
         return;
       }
       await _processNavResult(result);
@@ -174,28 +174,6 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     }
   }
 
-  Future<void> _processNavResult(Map<String, dynamic> result) async {
-    final pathKeys = result['result']?['path_keys'] ?? [];
-    final pathCoords = result['result']?['path_coords'] ?? [];
-    final floorSegs = splitPathByFloor(pathKeys, pathCoords);
-    final List<String> cmds = List<String>.from(result['cmds'] ?? []);
-    if (cmds.isNotEmpty) {
-      final lang = context.read<SettingsProvider>().languageCode;
-      await TTSService.setLanguage(lang);
-      final group = _extractCurrentCommandGroup(cmds);
-      TTSService.speakSequentially(group);
-    }
-    final mapKey = (result['best_map_key'] as List).take(3).join('|');
-    if (mapKey != _lastMapKey) {
-      await _fetchFloorplan();
-      _lastMapKey = mapKey;
-    }
-    setState(() {
-      _navResultData = result;
-      _currentPath = floorSegs[_lastMapKey!] ?? [];
-    });
-  }
-
   Future<Uint8List> fixImageOrientation(Uint8List imageBytes) async {
     final codec = await ui.instantiateImageCodec(imageBytes);
     final frame = await codec.getNextFrame();
@@ -214,35 +192,92 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       autoCorrectionAngle: true,
     );
   }
+  
+  /// Processes the navigation result using structured commands with tags and metadata.
+  Future<void> _processNavResult(Map<String, dynamic> result) async {
+    // Extract path keys and coordinates for floor segmentation
+    final pathKeys = result['result']?['path_keys'] ?? [];
+    final pathCoords = result['result']?['path_coords'] ?? [];
+    final floorSegs = splitPathByFloor(pathKeys, pathCoords);
 
-  bool _isTurnCmd(String cmd, String lang) {
-    final keys = turnKeywords[lang] ?? turnKeywords['en']!;
-    return keys.any((k) => cmd.contains(k));
+    // Parse command list from backend result; ensure each is a map
+    final List<dynamic> cmdsRaw = result['cmds'] ?? [];
+    final List<Map<String, dynamic>> cmds = cmdsRaw
+        .where((e) => e is Map<String, dynamic>)
+        .cast<Map<String, dynamic>>()
+        .toList();
+
+    if (cmds.isNotEmpty) {
+      // Set TTS language to current user setting
+      final lang = context.read<SettingsProvider>().languageCode;
+      await TTSService.setLanguage(lang);
+
+      // Extract the current group of navigation commands to be spoken
+      final group = _extractCurrentCommandGroup(cmds);
+
+      // Only speak the 'text' field from each command
+      final groupTexts = group
+          .map((cmd) => cmd['text'] as String? ?? '')
+          .where((t) => t.isNotEmpty)
+          .toList();
+      TTSService.speakSequentially(groupTexts);
+    }
+
+    // Determine if the map (floor/building) has changed; reload if needed
+    final mapKey = (result['best_map_key'] as List).take(3).join('|');
+    if (mapKey != _lastMapKey) {
+      await _fetchFloorplan();
+      _lastMapKey = mapKey;
+    }
+    setState(() {
+      _navResultData = result;
+      _currentPath = floorSegs[_lastMapKey!] ?? [];
+    });
   }
 
-  bool _isForwardCmd(String cmd, String lang) {
-    final keys = forwardKeywords[lang] ?? forwardKeywords['en']!;
-    return keys.any((k) => cmd.contains(k));
-  }
-
-  List<String> _extractCurrentCommandGroup(List<String> cmds) {
+  /// Extracts the current group of navigation commands for sequential TTS playback.
+  ///
+  /// Logic:
+  /// - Collect commands up to and including the first 'forward' or 'forward_door' command.
+  /// - If such a command exists, also append any following non-turn/non-forward instructions.
+  /// - Designed for step-by-step navigation guidance.
+  ///
+  /// [cmds] - List of structured command maps from the backend.
+  /// Returns a sublist of commands to be spoken in this navigation step.
+  List<Map<String, dynamic>> _extractCurrentCommandGroup(List<Map<String, dynamic>> cmds) {
     if (cmds.isEmpty) return [];
-    final lang = context.read<SettingsProvider>().languageCode;
-    final result = <String>[];
+    final result = <Map<String, dynamic>>[];
     bool foundForward = false;
     int i = 0;
+    // Collect commands up to and including the first 'forward' command
     for (; i < cmds.length; ++i) {
       result.add(cmds[i]);
-      if (_isForwardCmd(cmds[i].toLowerCase(), lang)) { foundForward = true; i++; break; }
+      if (_isForwardTag(cmds[i]['tag'])) {
+        foundForward = true;
+        i++;
+        break;
+      }
     }
     if (!foundForward) return result;
+    // Add any following annotation or landmark (stop at next turn or forward)
     for (; i < cmds.length; ++i) {
-      final c = cmds[i].toLowerCase();
-      if (_isTurnCmd(c, lang) || _isForwardCmd(c, lang)) break;
+      final tag = cmds[i]['tag'] as String? ?? '';
+      if (_isTurnTag(tag) || _isForwardTag(tag)) break;
       result.add(cmds[i]);
     }
     return result;
   }
+
+  /// Checks if the command tag represents a forward movement.
+  bool _isForwardTag(String? tag) {
+    return tag == 'forward' || tag == 'forward_door';
+  }
+
+  /// Checks if the command tag represents a turn or U-turn.
+  bool _isTurnTag(String? tag) {
+    return tag == 'turn' || tag == 'u_turn';
+  }
+
 
   Widget _buildCameraPreview(Orientation orientation) {
     if (!_isCameraInitialized || _cameraController == null) {

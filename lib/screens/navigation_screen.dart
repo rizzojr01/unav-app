@@ -174,6 +174,25 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     }
   }
 
+  Future<Uint8List> fixImageOrientation(Uint8List imageBytes) async {
+    final codec = await ui.instantiateImageCodec(imageBytes);
+    final frame = await codec.getNextFrame();
+    final w = frame.image.width;
+    final h = frame.image.height;
+    const maxSide = 640;
+    int newW, newH;
+    if (w >= h) { newW = maxSide; newH = (h * maxSide / w).round(); }
+    else { newH = maxSide; newW = (w * maxSide / h).round(); }
+    return await FlutterImageCompress.compressWithList(
+      imageBytes,
+      format: CompressFormat.jpeg,
+      quality: 99,
+      minWidth: newW,
+      minHeight: newH,
+      autoCorrectionAngle: true,
+    );
+  }
+  
   /// Processes the navigation result using structured commands with tags and metadata.
   Future<void> _processNavResult(Map<String, dynamic> result) async {
     // Extract path keys and coordinates for floor segmentation
@@ -259,25 +278,6 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     return tag == 'turn' || tag == 'u_turn';
   }
 
-
-  Future<Uint8List> fixImageOrientation(Uint8List imageBytes) async {
-    final codec = await ui.instantiateImageCodec(imageBytes);
-    final frame = await codec.getNextFrame();
-    final w = frame.image.width;
-    final h = frame.image.height;
-    const maxSide = 640;
-    int newW, newH;
-    if (w >= h) { newW = maxSide; newH = (h * maxSide / w).round(); }
-    else { newH = maxSide; newW = (w * maxSide / h).round(); }
-    return await FlutterImageCompress.compressWithList(
-      imageBytes,
-      format: CompressFormat.jpeg,
-      quality: 99,
-      minWidth: newW,
-      minHeight: newH,
-      autoCorrectionAngle: true,
-    );
-  }
 
   Widget _buildCameraPreview(Orientation orientation) {
     if (!_isCameraInitialized || _cameraController == null) {

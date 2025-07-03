@@ -525,7 +525,6 @@ class _StartupScreenState extends State<StartupScreen> {
     final cropped = await ImageCropper().cropImage(
       sourcePath: imageFile.path,
       aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
-      cropStyle: CropStyle.rectangle,
       maxWidth: 256,
       maxHeight: 256,
       compressFormat: ImageCompressFormat.jpg,

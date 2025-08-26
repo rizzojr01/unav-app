@@ -14,8 +14,10 @@ import '../providers/settings_provider.dart';
 
 /// StartupScreen
 /// Main entry point for UNav.
-/// Handles login, registration, persistent user profile, avatar selection/cropping/upload,
-/// avatar downloading from server after login, and seamless auto-login experience.
+/// - Handles login, registration, persistent user profile
+/// - Avatar selection/cropping/upload and server-side avatar download
+/// - Seamless auto-login
+/// - NEW: Server selection (NYU / MU), persisted for later sessions
 class StartupScreen extends StatefulWidget {
   const StartupScreen({super.key});
 
@@ -24,7 +26,7 @@ class StartupScreen extends StatefulWidget {
 }
 
 class _StartupScreenState extends State<StartupScreen> {
-  // --- Form controllers ---
+  // ---------- Form controllers ----------
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _loginPwdController = TextEditingController();
   final TextEditingController _regEmailController = TextEditingController();
@@ -33,7 +35,7 @@ class _StartupScreenState extends State<StartupScreen> {
   final TextEditingController _regPwd2Controller = TextEditingController();
   final TextEditingController _regCodeController = TextEditingController();
 
-  // --- UI state ---
+  // ---------- UI state ----------
   String? _serverAddress, _errorMsg, _regPwdMismatchMsg, _regCodeMsg;
   bool _isLoading = false, _registerMode = false, _showFullLogin = false;
   bool _codeSent = false;
@@ -41,22 +43,30 @@ class _StartupScreenState extends State<StartupScreen> {
   Timer? _timer;
   bool _isRegFormValid = false, _isCodeFilled = false;
 
-  // --- Cached profile and preferences ---
+  // ---------- Cached profile and preferences ----------
   String? _cachedEmail, _cachedNickname, _cachedAvatarUrl, _cachedUnit, _cachedLanguage;
   File? _cachedAvatarFile;
-  Key _avatarKey = UniqueKey(); // Key to force avatar image refresh
+  Key _avatarKey = UniqueKey(); // Force avatar image refresh
 
-  // --- Supported language list ---
-  final List<Map<String, String>> _languages = [
+  // ---------- Language list ----------
+  final List<Map<String, String>> _languages = const [
     {'code': 'en', 'name': 'English'},
     {'code': 'zh', 'name': '中文'},
     {'code': 'th', 'name': 'ไทย'},
   ];
 
+  // ---------- Server options (NEW) ----------
+  // Key -> Display name; Value -> Base URL
+  final Map<String, String> _serverOptions = const {
+    'NYU': 'http://unav.zapto.org:5001',
+    'MU': 'http://mu-tau.ddns.net:5001',
+  };
+  String _selectedServerKey = 'NYU';
+
   @override
   void initState() {
     super.initState();
-    _loadServerAddress();
+    _loadServerAddress();                 // Must run first to set ApiService base
     _loadUnitAndLanguageToProvider();
     _loadCachedProfileAndPrefs();
     _regPwdController.addListener(_validateRegisterForm);
@@ -67,6 +77,20 @@ class _StartupScreenState extends State<StartupScreen> {
     _tryAutoLogin();
   }
 
+  // ---------- Helpers: URL/base handling ----------
+  String _normalizeBase(String base) {
+    if (base.endsWith('/')) return base.substring(0, base.length - 1);
+    return base;
+  }
+
+  /// Resolve possibly-relative URL using the currently selected server base.
+  String _resolveUrl(String url) {
+    if (url.startsWith('http')) return url;
+    final base = _normalizeBase(_serverAddress ?? _serverOptions[_selectedServerKey]!);
+    return '$base$url';
+  }
+
+  // ---------- Loaders ----------
   /// Loads cached user info, preferences, and avatar from persistent storage.
   Future<void> _loadCachedProfileAndPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -121,10 +145,12 @@ class _StartupScreenState extends State<StartupScreen> {
         final provider = context.read<SettingsProvider>();
         await provider.saveAvatar(file);
       }
-    } catch (e) {}
+    } catch (_) {
+      // Silently ignore avatar download errors
+    }
   }
 
-  /// Attempts auto-login with saved credentials, otherwise shows login UI.
+  /// Attempts auto-login with saved credentials; otherwise shows login UI.
   Future<void> _tryAutoLogin() async {
     final prefs = await SharedPreferences.getInstance();
     final email = prefs.getString('saved_email');
@@ -140,11 +166,9 @@ class _StartupScreenState extends State<StartupScreen> {
       if (!resp.containsKey('error')) {
         provider.setEmail(email);
         provider.setNickname(resp['nickname'] ?? nickname ?? "");
-        String? newAvatarUrl = resp['avatar_url'];
+        final newAvatarUrl = resp['avatar_url'] as String?;
         if (newAvatarUrl != null && newAvatarUrl.isNotEmpty) {
-          String fullUrl = newAvatarUrl.startsWith('http')
-              ? newAvatarUrl
-              : 'http://unav.zapto.org:5001$newAvatarUrl';
+          final fullUrl = _resolveUrl(newAvatarUrl);
           await _downloadAndSaveAvatar(fullUrl);
           await provider.saveAvatarUrl(fullUrl);
           await _saveProfileAndPrefs(
@@ -152,10 +176,10 @@ class _StartupScreenState extends State<StartupScreen> {
             avatarLocalPath: _cachedAvatarFile?.path,
           );
         } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
-          await provider.saveAvatarUrl(avatarUrl);
+          await provider.saveAvatarUrl(_resolveUrl(avatarUrl));
         }
         provider.setAll(language: lang, unit: unit);
-        if (provider.setLoggedIn != null) await provider.setLoggedIn(true);
+        await provider.setLoggedIn(true);
         setState(() {
           _showFullLogin = false;
           _errorMsg = null;
@@ -175,6 +199,7 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
+  // ---------- Persistence ----------
   /// Saves user profile and preferences to persistent storage.
   Future<void> _saveProfileAndPrefs(
     String email,
@@ -229,33 +254,32 @@ class _StartupScreenState extends State<StartupScreen> {
     await context.read<SettingsProvider>().clearProfile();
   }
 
+  // ---------- Auth handlers ----------
   /// Handles login: checks input validity, only sends request if valid.
   Future<void> _handleLogin() async {
-    String email = _emailController.text.trim();
-    String pwd = _loginPwdController.text;
+    final email = _emailController.text.trim();
+    final pwd = _loginPwdController.text;
 
-    // Validate email and password locally before request
     if (!email.contains('@') || email.isEmpty) {
-      setState(() {
-        _errorMsg = "Please enter a valid email address.";
-      });
+      setState(() => _errorMsg = "Please enter a valid email address.");
       return;
     }
     if (pwd.isEmpty) {
-      setState(() {
-        _errorMsg = "Password cannot be empty.";
-      });
+      setState(() => _errorMsg = "Password cannot be empty.");
       return;
     }
 
-    setState(() { _isLoading = true; _errorMsg = null; });
-    await _saveServerAddress(_serverAddress ?? "http://unav.zapto.org:5001");
+    setState(() {
+      _isLoading = true;
+      _errorMsg = null;
+    });
+
+    // Ensure ApiService uses the selected server
+    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
+
     final provider = context.read<SettingsProvider>();
     try {
-      final resp = await ApiService.login(
-        email,
-        pwd,
-      );
+      final resp = await ApiService.login(email, pwd);
       if (resp.containsKey("error")) {
         setState(() {
           _errorMsg = _backendErrorToText(resp["error"]);
@@ -265,11 +289,9 @@ class _StartupScreenState extends State<StartupScreen> {
       }
       provider.setEmail(email);
       provider.setNickname(resp["nickname"] ?? "");
-      String? avatarUrl = resp['avatar_url'];
+      final avatarUrl = resp['avatar_url'] as String?;
       if (avatarUrl != null && avatarUrl.isNotEmpty) {
-        String fullUrl = avatarUrl.startsWith('http')
-            ? avatarUrl
-            : 'http://unav.zapto.org:5001$avatarUrl';
+        final fullUrl = _resolveUrl(avatarUrl);
         await _downloadAndSaveAvatar(fullUrl);
         await provider.saveAvatarUrl(fullUrl);
         await _saveProfileAndPrefs(
@@ -283,6 +305,7 @@ class _StartupScreenState extends State<StartupScreen> {
         );
         setState(() => _avatarKey = UniqueKey());
       } else if (provider.avatarUrl != null) {
+        // Keep existing avatar URL if any
         await provider.saveAvatarUrl(provider.avatarUrl!);
       }
       await _onAuthSuccess(
@@ -292,7 +315,7 @@ class _StartupScreenState extends State<StartupScreen> {
         provider.avatarUrl,
         avatarLocalPath: _cachedAvatarFile?.path,
       );
-    } catch (e) {
+    } catch (_) {
       setState(() {
         _errorMsg = "Network or server error!";
         _isLoading = false;
@@ -315,7 +338,10 @@ class _StartupScreenState extends State<StartupScreen> {
       });
       return;
     }
-    await _saveServerAddress(_serverAddress ?? "http://unav.zapto.org:5001");
+
+    // Ensure ApiService uses the selected server
+    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
+
     final provider = context.read<SettingsProvider>();
     try {
       final resp = await ApiService.register(
@@ -351,11 +377,9 @@ class _StartupScreenState extends State<StartupScreen> {
       provider.setEmail(_regEmailController.text.trim());
       provider.setNickname(_regNicknameController.text.trim());
 
-      String? avatarUrl = loginResp['avatar_url'];
+      final avatarUrl = loginResp['avatar_url'] as String?;
       if (avatarUrl != null && avatarUrl.isNotEmpty) {
-        String fullUrl = avatarUrl.startsWith('http')
-            ? avatarUrl
-            : 'http://unav.zapto.org:5001$avatarUrl';
+        final fullUrl = _resolveUrl(avatarUrl);
         await _downloadAndSaveAvatar(fullUrl);
         await provider.saveAvatarUrl(fullUrl);
         await _saveProfileAndPrefs(
@@ -378,7 +402,7 @@ class _StartupScreenState extends State<StartupScreen> {
         provider.avatarUrl,
         avatarLocalPath: _cachedAvatarFile?.path,
       );
-    } catch (e) {
+    } catch (_) {
       setState(() {
         _errorMsg = "Network or server error!";
         _isLoading = false;
@@ -386,18 +410,39 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  /// Validates registration form and updates UI state.
+  /// Unified handler to save all info after login/registration/avatar update.
+  Future<void> _onAuthSuccess(
+    String email,
+    String password,
+    String? nickname,
+    String? avatarUrl, {
+    String? avatarLocalPath,
+  }) async {
+    final provider = context.read<SettingsProvider>();
+    await _saveProfileAndPrefs(
+      email, password, nickname, avatarUrl, provider.unit, provider.languageCode,
+      avatarLocalPath: avatarLocalPath,
+    );
+    await ApiService.selectUnit(provider.unit);
+    await ApiService.selectLanguage(provider.languageCode);
+    await provider.setLoggedIn(true);
+    if (context.mounted) {
+      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectScreen()));
+    }
+  }
+
+  // ---------- Validation & error mapping ----------
   void _validateRegisterForm() {
-    String email = _regEmailController.text.trim();
-    String nickname = _regNicknameController.text.trim();
-    String pwd1 = _regPwdController.text;
-    String pwd2 = _regPwd2Controller.text;
-    String code = _regCodeController.text.trim();
-    bool isPwdMatch = pwd1.isNotEmpty && pwd2.isNotEmpty && pwd1 == pwd2;
-    bool isEmail = email.contains('@');
-    bool isNickname = nickname.isNotEmpty;
-    bool isPwdValid = pwd1.length >= 6;
-    bool isCode = code.isNotEmpty;
+    final email = _regEmailController.text.trim();
+    final nickname = _regNicknameController.text.trim();
+    final pwd1 = _regPwdController.text;
+    final pwd2 = _regPwd2Controller.text;
+    final code = _regCodeController.text.trim();
+    final isPwdMatch = pwd1.isNotEmpty && pwd2.isNotEmpty && pwd1 == pwd2;
+    final isEmail = email.contains('@');
+    final isNickname = nickname.isNotEmpty;
+    final isPwdValid = pwd1.length >= 6;
+    final isCode = code.isNotEmpty;
     setState(() {
       _isRegFormValid = isEmail && isNickname && isPwdValid && isPwdMatch;
       _isCodeFilled = isCode;
@@ -405,19 +450,25 @@ class _StartupScreenState extends State<StartupScreen> {
     });
   }
 
-  /// Converts backend error codes to human-readable messages.
   String _backendErrorToText(String error) {
     switch (error) {
-      case "user_exists": return "User already exists.";
-      case "invalid_or_expired_code": return "Invalid or expired verification code.";
-      case "empty_field": return "Please complete all fields.";
-      case "incorrect_credentials": return "Incorrect email or password.";
-      case "invalid_email": return "Invalid email address.";
-      default: return error;
+      case "user_exists":
+        return "User already exists.";
+      case "invalid_or_expired_code":
+        return "Invalid or expired verification code.";
+      case "empty_field":
+        return "Please complete all fields.";
+      case "incorrect_credentials":
+        return "Incorrect email or password.";
+      case "invalid_email":
+        return "Invalid email address.";
+      default:
+        return error;
     }
   }
 
-  /// Unit selector row. Updates provider and persists user's unit preference.
+  // ---------- UI: selectors ----------
+  /// Unit selector row.
   Widget _unitSelector() {
     final provider = context.watch<SettingsProvider>();
     return Row(
@@ -433,7 +484,13 @@ class _StartupScreenState extends State<StartupScreen> {
           style: OutlinedButton.styleFrom(
             backgroundColor: provider.unit == "feet" ? Colors.blueAccent : Colors.transparent,
           ),
-          child: Text("Feet", style: TextStyle(color: provider.unit == "feet" ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
+          child: Text(
+            "Feet",
+            style: TextStyle(
+              color: provider.unit == "feet" ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
         const SizedBox(width: 8),
         OutlinedButton(
@@ -445,13 +502,19 @@ class _StartupScreenState extends State<StartupScreen> {
           style: OutlinedButton.styleFrom(
             backgroundColor: provider.unit == "meter" ? Colors.blueAccent : Colors.transparent,
           ),
-          child: Text("Meter", style: TextStyle(color: provider.unit == "meter" ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
+          child: Text(
+            "Meter",
+            style: TextStyle(
+              color: provider.unit == "meter" ? Colors.white : Colors.black87,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
       ],
     );
   }
 
-  /// Language selector dropdown. Updates provider and persists user's language choice.
+  /// Language selector dropdown.
   Widget _languageSelector() {
     final provider = context.watch<SettingsProvider>();
     return Row(
@@ -478,7 +541,39 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
-  /// Handles logout. Clears all credentials and resets UI to login/register state.
+  /// Server selector (NEW): NYU / MU.
+  Widget _serverSelector() {
+    return Row(
+      children: [
+        const Text("Server:", style: TextStyle(fontSize: 18)),
+        const SizedBox(width: 8),
+        DropdownButton<String>(
+          value: _selectedServerKey,
+          items: _serverOptions.keys.map((key) {
+            return DropdownMenuItem(
+              value: key,
+              child: Text(key), // Display human-friendly key
+            );
+          }).toList(),
+          onChanged: (String? newKey) async {
+            if (newKey == null) return;
+            await _saveServerSelection(newKey);
+          },
+        ),
+        const SizedBox(width: 12),
+        // Display the base URL for user confirmation (read-only)
+        Flexible(
+          child: Text(
+            _serverAddress ?? _serverOptions[_selectedServerKey]!,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ---------- Logout ----------
   Future<void> _logout() async {
     await ApiService.logout();
     await _clearCachedProfileAndPrefs();
@@ -488,7 +583,7 @@ class _StartupScreenState extends State<StartupScreen> {
     });
   }
 
-  /// Handles avatar selection, cropping, resizing, upload, and local storage.
+  // ---------- Avatar pick/crop/upload ----------
   Future<void> _pickAvatar() async {
     showModalBottomSheet(
       context: context,
@@ -565,49 +660,136 @@ class _StartupScreenState extends State<StartupScreen> {
       final uploadResp = await ApiService.uploadAvatar(bytes, "avatar.jpg", email);
       final url = uploadResp['url'];
       if (url != null && (url as String).isNotEmpty) {
-        String avatarUrl = url as String;
-        await provider.saveAvatarUrl(avatarUrl);
-        String fullUrl = avatarUrl.startsWith('http')
-            ? avatarUrl
-            : 'http://unav.zapto.org:5001$avatarUrl';
-        fullUrl += '?t=${DateTime.now().millisecondsSinceEpoch}';
-        await _downloadAndSaveAvatar(fullUrl);
-        await _onAuthSuccess(email, _loginPwdController.text, provider.nickname, avatarUrl, avatarLocalPath: localAvatarPath);
-        setState(() => _avatarKey = UniqueKey()); // Ensure UI always refreshes
+        final resolved = _resolveUrl(url);
+        await provider.saveAvatarUrl(resolved);
+        // Bust caching
+        final withTs = '$resolved?t=${DateTime.now().millisecondsSinceEpoch}';
+        await _downloadAndSaveAvatar(withTs);
+        await _onAuthSuccess(
+          email,
+          _loginPwdController.text,
+          provider.nickname,
+          resolved,
+          avatarLocalPath: localAvatarPath,
+        );
+        setState(() => _avatarKey = UniqueKey());
       }
     }
   }
 
-  /// Unified handler to save all info after login/registration/avatar update.
-  Future<void> _onAuthSuccess(
-    String email,
-    String password,
-    String? nickname,
-    String? avatarUrl, {
-    String? avatarLocalPath,
-  }) async {
-    final provider = context.read<SettingsProvider>();
-    await _saveProfileAndPrefs(
-      email, password, nickname, avatarUrl, provider.unit, provider.languageCode,
-      avatarLocalPath: avatarLocalPath,
-    );
-    await ApiService.selectUnit(provider.unit);
-    await ApiService.selectLanguage(provider.languageCode);
-    if (provider.setLoggedIn != null) await provider.setLoggedIn(true);
-    if (context.mounted) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectScreen()));
+  // ---------- Verification code ----------
+  Future<void> _sendVerificationCode() async {
+    final email = _regEmailController.text.trim();
+    if (!email.contains('@')) {
+      setState(() => _regCodeMsg = "Please enter a valid email address.");
+      return;
+    }
+    setState(() {
+      _regCodeMsg = null;
+      _codeSent = false;
+      _codeTimeout = 0;
+    });
+
+    // Ensure ApiService uses the selected server
+    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
+
+    try {
+      final resp = await ApiService.sendVerificationCode(email);
+      if (resp.containsKey("msg")) {
+        setState(() {
+          _codeSent = true;
+          _codeTimeout = 60;
+          _regCodeMsg = "Verification code sent to $email.";
+        });
+        _timer?.cancel();
+        _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          setState(() {
+            _codeTimeout -= 1;
+            if (_codeTimeout <= 0) {
+              timer.cancel();
+            }
+          });
+        });
+      } else if (resp.containsKey("error")) {
+        setState(() => _regCodeMsg = _backendErrorToText(resp["error"]));
+      } else {
+        setState(() => _regCodeMsg = "Failed to send verification code.");
+      }
+    } catch (_) {
+      setState(() => _regCodeMsg = "Network or server error.");
     }
   }
 
-  /// Loads server address from storage.
-  Future<void> _loadServerAddress() async {
+  // ---------- Auto-login enter ----------
+  Future<void> _enterAppWithAutoLogin() async {
+    final provider = context.read<SettingsProvider>();
     final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString("server_address") ?? "http://unav.zapto.org:5001";
-    ApiService.setServer(saved);
-    setState(() => _serverAddress = saved);
+    final email = prefs.getString('saved_email');
+    final pwd = prefs.getString('saved_password');
+    final nickname = prefs.getString('saved_nickname');
+    final avatarUrl = prefs.getString('saved_avatar_url');
+    final localAvatarPath = prefs.getString('saved_avatar_local');
+    if (email == null || pwd == null) {
+      setState(() {
+        _showFullLogin = true;
+        _errorMsg = null;
+      });
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _errorMsg = null;
+    });
+
+    // Ensure ApiService uses the selected server
+    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
+
+    final resp = await ApiService.login(email, pwd);
+    if (resp.containsKey('error')) {
+      await _clearCachedProfileAndPrefs();
+      setState(() {
+        _isLoading = false;
+        _showFullLogin = true;
+        _errorMsg = _backendErrorToText(resp['error']);
+      });
+      return;
+    }
+    provider.setEmail(email);
+    provider.setNickname(resp['nickname'] ?? nickname ?? "");
+    final serverAvatarUrl = resp['avatar_url'] as String?;
+    if (serverAvatarUrl != null && serverAvatarUrl.isNotEmpty) {
+      final fullUrl = _resolveUrl(serverAvatarUrl);
+      await _downloadAndSaveAvatar(fullUrl);
+      await provider.saveAvatarUrl(fullUrl);
+      setState(() => _avatarKey = UniqueKey());
+    } else if (localAvatarPath != null && File(localAvatarPath).existsSync()) {
+      await provider.saveAvatar(File(localAvatarPath));
+    } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      await provider.saveAvatarUrl(_resolveUrl(avatarUrl));
+    }
+    await _onAuthSuccess(
+      email,
+      pwd,
+      provider.nickname,
+      provider.avatarUrl,
+      avatarLocalPath: localAvatarPath,
+    );
   }
 
-  /// Saves server address to storage.
+  // ---------- Server persistence ----------
+  /// Loads server address and selection (NYU / MU) from storage; sets ApiService base.
+  Future<void> _loadServerAddress() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedKey = prefs.getString("saved_server_key") ?? 'NYU';
+    final savedAddr = prefs.getString("server_address") ?? _serverOptions[savedKey]!;
+    ApiService.setServer(savedAddr);
+    setState(() {
+      _selectedServerKey = _serverOptions.containsKey(savedKey) ? savedKey : 'NYU';
+      _serverAddress = savedAddr;
+    });
+  }
+
+  /// Saves server address (base URL) to storage and updates ApiService.
   Future<void> _saveServerAddress(String addr) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString("server_address", addr);
@@ -615,6 +797,18 @@ class _StartupScreenState extends State<StartupScreen> {
     setState(() => _serverAddress = addr);
   }
 
+  /// Saves the chosen server key and corresponding address.
+  Future<void> _saveServerSelection(String key) async {
+    final base = _serverOptions[key]!;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString("saved_server_key", key);
+    await _saveServerAddress(base);
+    setState(() {
+      _selectedServerKey = key;
+    });
+  }
+
+  // ---------- Lifecycle ----------
   @override
   void dispose() {
     _timer?.cancel();
@@ -628,7 +822,7 @@ class _StartupScreenState extends State<StartupScreen> {
     super.dispose();
   }
 
-  /// Main build method. Shows profile card if logged in, else shows login/register forms.
+  // ---------- Build ----------
   @override
   Widget build(BuildContext context) {
     final settingsProvider = context.watch<SettingsProvider>();
@@ -637,7 +831,7 @@ class _StartupScreenState extends State<StartupScreen> {
         ? settingsProvider.avatarUrl!
         : (_cachedAvatarUrl ?? "");
 
-    // 1. If user is logged in and not in register/forced-login mode, show profile card
+    // Profile card if already logged in and not in register/forced-login mode
     if ((settingsProvider.isLoggedIn ?? false) && !_registerMode && !_showFullLogin) {
       return Scaffold(
         appBar: AppBar(
@@ -654,6 +848,7 @@ class _StartupScreenState extends State<StartupScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              // Quick access to avatar update
               GestureDetector(
                 onTap: _pickAvatar,
                 child: CircleAvatar(
@@ -678,6 +873,11 @@ class _StartupScreenState extends State<StartupScreen> {
                 style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
+              // Show current server and allow changing it before entering
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12.0),
+                child: _serverSelector(),
+              ),
               ElevatedButton(
                 onPressed: _isLoading ? null : _enterAppWithAutoLogin,
                 style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
@@ -694,7 +894,7 @@ class _StartupScreenState extends State<StartupScreen> {
       );
     }
 
-    // 2. Otherwise show login or register form
+    // Login / Register forms
     return Scaffold(
       appBar: AppBar(
         title: const Text('UNav'),
@@ -709,9 +909,7 @@ class _StartupScreenState extends State<StartupScreen> {
                 backgroundColor: Colors.grey[350],
                 backgroundImage: avatarFile != null
                     ? FileImage(avatarFile)
-                    : (avatarUrl.isNotEmpty
-                        ? NetworkImage(avatarUrl) as ImageProvider
-                        : null),
+                    : (avatarUrl.isNotEmpty ? NetworkImage(avatarUrl) as ImageProvider : null),
                 child: (avatarFile == null && avatarUrl.isEmpty)
                     ? const Icon(Icons.person, color: Colors.white, size: 32)
                     : null,
@@ -723,7 +921,15 @@ class _StartupScreenState extends State<StartupScreen> {
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(28),
-          child: _registerMode ? _buildRegisterForm() : _buildLoginForm(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Server selector visible on auth screens as well
+              _serverSelector(),
+              const SizedBox(height: 16),
+              _registerMode ? _buildRegisterForm() : _buildLoginForm(),
+            ],
+          ),
         ),
       ),
       bottomNavigationBar: SafeArea(
@@ -734,12 +940,16 @@ class _StartupScreenState extends State<StartupScreen> {
             children: [
               if (!_registerMode)
                 TextButton(
-                  onPressed: () => setState(() { _registerMode = true; }),
+                  onPressed: () => setState(() {
+                    _registerMode = true;
+                  }),
                   child: const Text("No account? Register", style: TextStyle(fontSize: 16)),
                 ),
               if (_registerMode)
                 TextButton(
-                  onPressed: () => setState(() { _registerMode = false; }),
+                  onPressed: () => setState(() {
+                    _registerMode = false;
+                  }),
                   child: const Text("Already registered? Login", style: TextStyle(fontSize: 16)),
                 ),
             ],
@@ -749,13 +959,14 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
+  // ---------- Sub-forms ----------
   /// Login form (email, password)
   Widget _buildLoginForm() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         const Text("Welcome to UNav", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 32),
+        const SizedBox(height: 24),
         TextField(
           controller: _emailController,
           keyboardType: TextInputType.emailAddress,
@@ -802,7 +1013,7 @@ class _StartupScreenState extends State<StartupScreen> {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         const Text("Register for UNav", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 32),
+        const SizedBox(height: 24),
         TextField(
           controller: _regEmailController,
           keyboardType: TextInputType.emailAddress,
@@ -892,92 +1103,5 @@ class _StartupScreenState extends State<StartupScreen> {
         ),
       ],
     );
-  }
-
-  /// Sends email verification code for registration.
-  Future<void> _sendVerificationCode() async {
-    final email = _regEmailController.text.trim();
-    if (!email.contains('@')) {
-      setState(() => _regCodeMsg = "Please enter a valid email address.");
-      return;
-    }
-    setState(() {
-      _regCodeMsg = null;
-      _codeSent = false;
-      _codeTimeout = 0;
-    });
-    try {
-      final resp = await ApiService.sendVerificationCode(email);
-      if (resp.containsKey("msg")) {
-        setState(() {
-          _codeSent = true;
-          _codeTimeout = 60;
-          _regCodeMsg = "Verification code sent to $email.";
-        });
-        _timer?.cancel();
-        _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          setState(() {
-            _codeTimeout -= 1;
-            if (_codeTimeout <= 0) {
-              timer.cancel();
-            }
-          });
-        });
-      } else if (resp.containsKey("error")) {
-        setState(() => _regCodeMsg = _backendErrorToText(resp["error"]));
-      } else {
-        setState(() => _regCodeMsg = "Failed to send verification code.");
-      }
-    } catch (e) {
-      setState(() => _regCodeMsg = "Network or server error.");
-    }
-  }
-
-  /// When user clicks Enter App (after auto-login profile card), verifies credentials and enters the app.
-  Future<void> _enterAppWithAutoLogin() async {
-    final provider = context.read<SettingsProvider>();
-    final prefs = await SharedPreferences.getInstance();
-    final email = prefs.getString('saved_email');
-    final pwd = prefs.getString('saved_password');
-    final nickname = prefs.getString('saved_nickname');
-    final avatarUrl = prefs.getString('saved_avatar_url');
-    final localAvatarPath = prefs.getString('saved_avatar_local');
-    if (email == null || pwd == null) {
-      setState(() {
-        _showFullLogin = true;
-        _errorMsg = null;
-      });
-      return;
-    }
-    setState(() {
-      _isLoading = true;
-      _errorMsg = null;
-    });
-    final resp = await ApiService.login(email, pwd);
-    if (resp.containsKey('error')) {
-      await _clearCachedProfileAndPrefs();
-      setState(() {
-        _isLoading = false;
-        _showFullLogin = true;
-        _errorMsg = _backendErrorToText(resp['error']);
-      });
-      return;
-    }
-    provider.setEmail(email);
-    provider.setNickname(resp['nickname'] ?? nickname ?? "");
-    String? serverAvatarUrl = resp['avatar_url'];
-    if (serverAvatarUrl != null && serverAvatarUrl.isNotEmpty) {
-      String fullUrl = serverAvatarUrl.startsWith('http')
-          ? serverAvatarUrl
-          : 'http://unav.zapto.org:5001$serverAvatarUrl';
-      await _downloadAndSaveAvatar(fullUrl);
-      await provider.saveAvatarUrl(fullUrl);
-      setState(() => _avatarKey = UniqueKey());
-    } else if (localAvatarPath != null && File(localAvatarPath).existsSync()) {
-      await provider.saveAvatar(File(localAvatarPath));
-    } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
-      await provider.saveAvatarUrl(avatarUrl);
-    }
-    await _onAuthSuccess(email, pwd, provider.nickname, provider.avatarUrl, avatarLocalPath: localAvatarPath);
   }
 }

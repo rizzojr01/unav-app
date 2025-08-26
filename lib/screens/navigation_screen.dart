@@ -36,7 +36,7 @@ class NavigationScreen extends StatefulWidget {
   final String selectedDestinationName;
 
   const NavigationScreen({
-    Key? key,
+    super.key,
     required this.selectedPlaceId,
     required this.selectedPlaceName,
     required this.selectedBuildingId,
@@ -45,7 +45,7 @@ class NavigationScreen extends StatefulWidget {
     required this.selectedFloorName,
     required this.selectedDestinationId,
     required this.selectedDestinationName,
-  }) : super(key: key);
+  });
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
@@ -203,7 +203,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     // Parse command list from backend result; ensure each is a map
     final List<dynamic> cmdsRaw = result['cmds'] ?? [];
     final List<Map<String, dynamic>> cmds = cmdsRaw
-        .where((e) => e is Map<String, dynamic>)
+        .whereType<Map<String, dynamic>>()
         .cast<Map<String, dynamic>>()
         .toList();
 

@@ -7,13 +7,23 @@ class TTSService {
   static String _currentLang = 'en-US';
 
   static Future<void> setLanguage(String langCode) async {
+    try {
+      await _tts.setEngine('com.google.android.tts');
+    } catch (e) {
+      print('Warning: Failed to set Google TTS engine -> $e');
+    }
+
     // Map 'en', 'zh', 'th' to system locale string
     String locale = 'en-US';
     if (langCode == 'zh') {
       locale = 'zh-CN';
-    } else if (langCode == 'th') locale = 'th-TH';
+    } else if (langCode == 'th') {
+      locale = 'th-TH';
+    }
     _currentLang = locale;
-    await _tts.setLanguage(locale);
+
+    int result = await _tts.setLanguage(locale);
+    print('TTS setLanguage($locale) -> $result');
   }
 
   /// Speaks a single sentence, stops any existing speech first.
@@ -42,7 +52,6 @@ class TTSService {
     await _tts.setLanguage(_currentLang);
     await _tts.speak(text);
 
-    // 注册无参数的回调
     void handler() {
       completer.complete();
       _tts.setCompletionHandler(() {}); // Remove the handler after called once

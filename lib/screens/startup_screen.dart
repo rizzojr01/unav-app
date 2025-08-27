@@ -1,23 +1,27 @@
-import 'dart:io';
+// lib/screens/startup_screen.dart
 import 'dart:async';
-import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:provider/provider.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:image_cropper/image_cropper.dart';
-import 'package:path_provider/path_provider.dart';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:image_cropper/image_cropper.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/api_service.dart';
-import 'place_select_screen.dart';
 import '../providers/settings_provider.dart';
+import '../services/server_address_service.dart';
+import '../widgets/server_selector.dart';
+import 'place_select_screen.dart';
 
 /// StartupScreen
-/// Main entry point for UNav.
-/// - Handles login, registration, persistent user profile
-/// - Avatar selection/cropping/upload and server-side avatar download
-/// - Seamless auto-login
-/// - NEW: Server selection (NYU / MU), persisted for later sessions
+/// - 登录 / 注册
+/// - 自动登录 & 本地缓存(邮箱/昵称/头像/单位/语言)
+/// - 头像选择/裁剪/上传
+/// - 服务器选择（院校Key + 可编辑地址）
+/// - 相对URL 统一用 ServerAddressService.resolve 解析
 class StartupScreen extends StatefulWidget {
   const StartupScreen({super.key});
 
@@ -26,86 +30,100 @@ class StartupScreen extends StatefulWidget {
 }
 
 class _StartupScreenState extends State<StartupScreen> {
-  // ---------- Form controllers ----------
-  final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _loginPwdController = TextEditingController();
-  final TextEditingController _regEmailController = TextEditingController();
-  final TextEditingController _regNicknameController = TextEditingController();
-  final TextEditingController _regPwdController = TextEditingController();
-  final TextEditingController _regPwd2Controller = TextEditingController();
-  final TextEditingController _regCodeController = TextEditingController();
+  // -------------------- Controllers --------------------
+  final _emailCtl = TextEditingController();
+  final _pwdLoginCtl = TextEditingController();
 
-  // ---------- UI state ----------
-  String? _serverAddress, _errorMsg, _regPwdMismatchMsg, _regCodeMsg;
-  bool _isLoading = false, _registerMode = false, _showFullLogin = false;
+  final _regEmailCtl = TextEditingController();
+  final _regNicknameCtl = TextEditingController();
+  final _regPwdCtl = TextEditingController();
+  final _regPwd2Ctl = TextEditingController();
+  final _regCodeCtl = TextEditingController();
+
+  // -------------------- UI State --------------------
+  bool _isLoading = false;
+  bool _registerMode = false;
+  bool _showFullLogin = false;
+  String? _errorMsg;
+
+  // 注册表单状态
+  bool _isRegFormValid = false;
+  bool _isCodeFilled = false;
+  String? _regPwdMismatchMsg;
+  String? _regCodeMsg;
   bool _codeSent = false;
   int _codeTimeout = 0;
   Timer? _timer;
-  bool _isRegFormValid = false, _isCodeFilled = false;
 
-  // ---------- Cached profile and preferences ----------
+  // -------------------- Cached Profile --------------------
   String? _cachedEmail, _cachedNickname, _cachedAvatarUrl, _cachedUnit, _cachedLanguage;
   File? _cachedAvatarFile;
-  Key _avatarKey = UniqueKey(); // Force avatar image refresh
+  Key _avatarKey = UniqueKey();
 
-  // ---------- Language list ----------
+  // -------------------- Languages --------------------
   final List<Map<String, String>> _languages = const [
     {'code': 'en', 'name': 'English'},
     {'code': 'zh', 'name': '中文'},
     {'code': 'th', 'name': 'ไทย'},
   ];
 
-  // ---------- Server options (NEW) ----------
-  // Key -> Display name; Value -> Base URL
-  final Map<String, String> _serverOptions = const {
-    'NYU': 'http://unav.zapto.org:5001',
-    'MU': 'http://mu-tau.ddns.net:5001',
-  };
-  String _selectedServerKey = 'NYU';
-
+  // -------------------- Lifecycle --------------------
   @override
   void initState() {
     super.initState();
-    _loadServerAddress();                 // Must run first to set ApiService base
+    // 1) 先让 ApiService 使用当前保存的服务器
+    ServerAddressService.applyToApi();
+    // 2) Provider 的 unit/language 先加载
     _loadUnitAndLanguageToProvider();
+    // 3) 读取缓存资料（包含头像本地/远端）
     _loadCachedProfileAndPrefs();
-    _regPwdController.addListener(_validateRegisterForm);
-    _regPwd2Controller.addListener(_validateRegisterForm);
-    _regEmailController.addListener(_validateRegisterForm);
-    _regNicknameController.addListener(_validateRegisterForm);
-    _regCodeController.addListener(_validateRegisterForm);
+    // 4) 监听注册表单校验
+    _regPwdCtl.addListener(_validateRegisterForm);
+    _regPwd2Ctl.addListener(_validateRegisterForm);
+    _regEmailCtl.addListener(_validateRegisterForm);
+    _regNicknameCtl.addListener(_validateRegisterForm);
+    _regCodeCtl.addListener(_validateRegisterForm);
+    // 5) 自动登录
     _tryAutoLogin();
   }
 
-  // ---------- Helpers: URL/base handling ----------
-  String _normalizeBase(String base) {
-    if (base.endsWith('/')) return base.substring(0, base.length - 1);
-    return base;
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _emailCtl.dispose();
+    _pwdLoginCtl.dispose();
+    _regEmailCtl.dispose();
+    _regNicknameCtl.dispose();
+    _regPwdCtl.dispose();
+    _regPwd2Ctl.dispose();
+    _regCodeCtl.dispose();
+    super.dispose();
   }
 
-  /// Resolve possibly-relative URL using the currently selected server base.
-  String _resolveUrl(String url) {
-    if (url.startsWith('http')) return url;
-    final base = _normalizeBase(_serverAddress ?? _serverOptions[_selectedServerKey]!);
-    return '$base$url';
+  // -------------------- Loaders --------------------
+  Future<void> _loadUnitAndLanguageToProvider() async {
+    final sp = await SharedPreferences.getInstance();
+    final unit = sp.getString('saved_unit') ?? "feet";
+    final lang = sp.getString('saved_language') ?? "en";
+    final provider = context.read<SettingsProvider>();
+    provider.setAll(language: lang, unit: unit);
   }
 
-  // ---------- Loaders ----------
-  /// Loads cached user info, preferences, and avatar from persistent storage.
   Future<void> _loadCachedProfileAndPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
+    final sp = await SharedPreferences.getInstance();
     setState(() {
-      _cachedEmail = prefs.getString('saved_email');
-      _cachedNickname = prefs.getString('saved_nickname');
-      _cachedAvatarUrl = prefs.getString('saved_avatar_url');
-      _cachedUnit = prefs.getString('saved_unit') ?? "feet";
-      _cachedLanguage = prefs.getString('saved_language') ?? "en";
+      _cachedEmail = sp.getString('saved_email');
+      _cachedNickname = sp.getString('saved_nickname');
+      _cachedAvatarUrl = sp.getString('saved_avatar_url');
+      _cachedUnit = sp.getString('saved_unit') ?? "feet";
+      _cachedLanguage = sp.getString('saved_language') ?? "en";
     });
     final provider = context.read<SettingsProvider>();
     provider.setAll(language: _cachedLanguage!, unit: _cachedUnit!);
     provider.setEmail(_cachedEmail ?? "");
     provider.setNickname(_cachedNickname ?? "");
-    final localAvatarPath = prefs.getString('saved_avatar_local');
+
+    final localAvatarPath = sp.getString('saved_avatar_local');
     if (localAvatarPath != null && File(localAvatarPath).existsSync()) {
       _cachedAvatarFile = File(localAvatarPath);
       await provider.saveAvatar(_cachedAvatarFile!);
@@ -115,68 +133,58 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  /// Loads unit and language to Provider from storage.
-  Future<void> _loadUnitAndLanguageToProvider() async {
-    final prefs = await SharedPreferences.getInstance();
-    final unit = prefs.getString('saved_unit') ?? "feet";
-    final lang = prefs.getString('saved_language') ?? "en";
-    final provider = context.read<SettingsProvider>();
-    provider.setAll(language: lang, unit: unit);
-  }
-
-  /// Downloads avatar from server URL and saves locally.
   Future<void> _downloadAndSaveAvatar(String avatarUrl) async {
     try {
       final httpClient = HttpClient();
-      final request = await httpClient.getUrl(Uri.parse(avatarUrl));
-      final response = await request.close();
-      if (response.statusCode == 200) {
-        final bytes = await consolidateHttpClientResponseBytes(response);
-        final appDocDir = await getApplicationDocumentsDirectory();
-        final localPath = '${appDocDir.path}/avatar.jpg';
-        final file = File(localPath);
-        await file.writeAsBytes(bytes);
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('saved_avatar_local', localPath);
+      final req = await httpClient.getUrl(Uri.parse(avatarUrl));
+      final resp = await req.close();
+      if (resp.statusCode == 200) {
+        final bytes = await consolidateHttpClientResponseBytes(resp);
+        final dir = await getApplicationDocumentsDirectory();
+        final localPath = '${dir.path}/avatar.jpg';
+        final f = File(localPath);
+        await f.writeAsBytes(bytes);
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString('saved_avatar_local', localPath);
         setState(() {
-          _cachedAvatarFile = file;
+          _cachedAvatarFile = f;
           _avatarKey = UniqueKey();
         });
-        final provider = context.read<SettingsProvider>();
-        await provider.saveAvatar(file);
+        await context.read<SettingsProvider>().saveAvatar(f);
       }
     } catch (_) {
-      // Silently ignore avatar download errors
+      // 忽略头像下载错误
     }
   }
 
-  /// Attempts auto-login with saved credentials; otherwise shows login UI.
   Future<void> _tryAutoLogin() async {
-    final prefs = await SharedPreferences.getInstance();
-    final email = prefs.getString('saved_email');
-    final pwd = prefs.getString('saved_password');
-    final nickname = prefs.getString('saved_nickname');
-    final avatarUrl = prefs.getString('saved_avatar_url');
-    final unit = prefs.getString('saved_unit') ?? "feet";
-    final lang = prefs.getString('saved_language') ?? "en";
+    final sp = await SharedPreferences.getInstance();
+    final email = sp.getString('saved_email');
+    final pwd = sp.getString('saved_password');
+    final nickname = sp.getString('saved_nickname');
+    final avatarUrl = sp.getString('saved_avatar_url');
+    final unit = sp.getString('saved_unit') ?? "feet";
+    final lang = sp.getString('saved_language') ?? "en";
     final provider = context.read<SettingsProvider>();
 
     if (email != null && pwd != null) {
+      // 防止用户刚改了服务器地址，这里再同步一次
+      await ServerAddressService.applyToApi();
       final resp = await ApiService.login(email, pwd);
       if (!resp.containsKey('error')) {
         provider.setEmail(email);
         provider.setNickname(resp['nickname'] ?? nickname ?? "");
         final newAvatarUrl = resp['avatar_url'] as String?;
         if (newAvatarUrl != null && newAvatarUrl.isNotEmpty) {
-          final fullUrl = _resolveUrl(newAvatarUrl);
-          await _downloadAndSaveAvatar(fullUrl);
-          await provider.saveAvatarUrl(fullUrl);
+          final full = ServerAddressService.resolve(newAvatarUrl);
+          await _downloadAndSaveAvatar(full);
+          await provider.saveAvatarUrl(full);
           await _saveProfileAndPrefs(
-            email, pwd, provider.nickname, fullUrl, unit, lang,
+            email, pwd, provider.nickname, full, unit, lang,
             avatarLocalPath: _cachedAvatarFile?.path,
           );
         } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
-          await provider.saveAvatarUrl(_resolveUrl(avatarUrl));
+          await provider.saveAvatarUrl(ServerAddressService.resolve(avatarUrl));
         }
         provider.setAll(language: lang, unit: unit);
         await provider.setLoggedIn(true);
@@ -193,14 +201,11 @@ class _StartupScreenState extends State<StartupScreen> {
         });
       }
     } else {
-      setState(() {
-        _showFullLogin = true;
-      });
+      setState(() => _showFullLogin = true);
     }
   }
 
-  // ---------- Persistence ----------
-  /// Saves user profile and preferences to persistent storage.
+  // -------------------- Persistence --------------------
   Future<void> _saveProfileAndPrefs(
     String email,
     String password,
@@ -210,14 +215,14 @@ class _StartupScreenState extends State<StartupScreen> {
     String language, {
     String? avatarLocalPath,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('saved_email', email);
-    await prefs.setString('saved_password', password);
-    if (nickname != null) await prefs.setString('saved_nickname', nickname);
-    if (avatarUrl != null) await prefs.setString('saved_avatar_url', avatarUrl);
-    await prefs.setString('saved_unit', unit);
-    await prefs.setString('saved_language', language);
-    if (avatarLocalPath != null) await prefs.setString('saved_avatar_local', avatarLocalPath);
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString('saved_email', email);
+    await sp.setString('saved_password', password);
+    if (nickname != null) await sp.setString('saved_nickname', nickname);
+    if (avatarUrl != null) await sp.setString('saved_avatar_url', avatarUrl);
+    await sp.setString('saved_unit', unit);
+    await sp.setString('saved_language', language);
+    if (avatarLocalPath != null) await sp.setString('saved_avatar_local', avatarLocalPath);
     setState(() {
       _cachedEmail = email;
       _cachedNickname = nickname;
@@ -227,21 +232,20 @@ class _StartupScreenState extends State<StartupScreen> {
     });
   }
 
-  /// Clears all saved credentials, profile, and preferences.
   Future<void> _clearCachedProfileAndPrefs() async {
-    final prefs = await SharedPreferences.getInstance();
-    final localAvatarPath = prefs.getString('saved_avatar_local');
+    final sp = await SharedPreferences.getInstance();
+    final localAvatarPath = sp.getString('saved_avatar_local');
     if (localAvatarPath != null) {
       final file = File(localAvatarPath);
       if (await file.exists()) await file.delete();
-      await prefs.remove('saved_avatar_local');
+      await sp.remove('saved_avatar_local');
     }
-    await prefs.remove('saved_email');
-    await prefs.remove('saved_password');
-    await prefs.remove('saved_nickname');
-    await prefs.remove('saved_avatar_url');
-    await prefs.remove('saved_unit');
-    await prefs.remove('saved_language');
+    await sp.remove('saved_email');
+    await sp.remove('saved_password');
+    await sp.remove('saved_nickname');
+    await sp.remove('saved_avatar_url');
+    await sp.remove('saved_unit');
+    await sp.remove('saved_language');
     setState(() {
       _cachedEmail = null;
       _cachedNickname = null;
@@ -254,11 +258,10 @@ class _StartupScreenState extends State<StartupScreen> {
     await context.read<SettingsProvider>().clearProfile();
   }
 
-  // ---------- Auth handlers ----------
-  /// Handles login: checks input validity, only sends request if valid.
+  // -------------------- Auth Handlers --------------------
   Future<void> _handleLogin() async {
-    final email = _emailController.text.trim();
-    final pwd = _loginPwdController.text;
+    final email = _emailCtl.text.trim();
+    final pwd = _pwdLoginCtl.text;
 
     if (!email.contains('@') || email.isEmpty) {
       setState(() => _errorMsg = "Please enter a valid email address.");
@@ -274,8 +277,7 @@ class _StartupScreenState extends State<StartupScreen> {
       _errorMsg = null;
     });
 
-    // Ensure ApiService uses the selected server
-    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
+    await ServerAddressService.applyToApi();
 
     final provider = context.read<SettingsProvider>();
     try {
@@ -291,7 +293,7 @@ class _StartupScreenState extends State<StartupScreen> {
       provider.setNickname(resp["nickname"] ?? "");
       final avatarUrl = resp['avatar_url'] as String?;
       if (avatarUrl != null && avatarUrl.isNotEmpty) {
-        final fullUrl = _resolveUrl(avatarUrl);
+        final fullUrl = ServerAddressService.resolve(avatarUrl);
         await _downloadAndSaveAvatar(fullUrl);
         await provider.saveAvatarUrl(fullUrl);
         await _saveProfileAndPrefs(
@@ -305,7 +307,6 @@ class _StartupScreenState extends State<StartupScreen> {
         );
         setState(() => _avatarKey = UniqueKey());
       } else if (provider.avatarUrl != null) {
-        // Keep existing avatar URL if any
         await provider.saveAvatarUrl(provider.avatarUrl!);
       }
       await _onAuthSuccess(
@@ -323,7 +324,6 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  /// Handles registration, then logs in and saves info on success.
   Future<void> _handleRegister() async {
     setState(() {
       _isLoading = true;
@@ -339,16 +339,15 @@ class _StartupScreenState extends State<StartupScreen> {
       return;
     }
 
-    // Ensure ApiService uses the selected server
-    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
+    await ServerAddressService.applyToApi();
 
     final provider = context.read<SettingsProvider>();
     try {
       final resp = await ApiService.register(
-        _regEmailController.text.trim(),
-        _regNicknameController.text.trim(),
-        _regPwdController.text,
-        _regCodeController.text.trim(),
+        _regEmailCtl.text.trim(),
+        _regNicknameCtl.text.trim(),
+        _regPwdCtl.text,
+        _regCodeCtl.text.trim(),
       );
       if (resp.containsKey("error")) {
         setState(() {
@@ -364,8 +363,8 @@ class _StartupScreenState extends State<StartupScreen> {
         return;
       }
       final loginResp = await ApiService.login(
-        _regEmailController.text.trim(),
-        _regPwdController.text,
+        _regEmailCtl.text.trim(),
+        _regPwdCtl.text,
       );
       if (loginResp.containsKey("error")) {
         setState(() {
@@ -374,17 +373,17 @@ class _StartupScreenState extends State<StartupScreen> {
         });
         return;
       }
-      provider.setEmail(_regEmailController.text.trim());
-      provider.setNickname(_regNicknameController.text.trim());
+      provider.setEmail(_regEmailCtl.text.trim());
+      provider.setNickname(_regNicknameCtl.text.trim());
 
       final avatarUrl = loginResp['avatar_url'] as String?;
       if (avatarUrl != null && avatarUrl.isNotEmpty) {
-        final fullUrl = _resolveUrl(avatarUrl);
+        final fullUrl = ServerAddressService.resolve(avatarUrl);
         await _downloadAndSaveAvatar(fullUrl);
         await provider.saveAvatarUrl(fullUrl);
         await _saveProfileAndPrefs(
-          _regEmailController.text.trim(),
-          _regPwdController.text,
+          _regEmailCtl.text.trim(),
+          _regPwdCtl.text,
           provider.nickname,
           fullUrl,
           provider.unit,
@@ -396,8 +395,8 @@ class _StartupScreenState extends State<StartupScreen> {
         await provider.saveAvatarUrl(provider.avatarUrl!);
       }
       await _onAuthSuccess(
-        _regEmailController.text.trim(),
-        _regPwdController.text,
+        _regEmailCtl.text.trim(),
+        _regPwdCtl.text,
         provider.nickname,
         provider.avatarUrl,
         avatarLocalPath: _cachedAvatarFile?.path,
@@ -410,7 +409,6 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  /// Unified handler to save all info after login/registration/avatar update.
   Future<void> _onAuthSuccess(
     String email,
     String password,
@@ -431,18 +429,161 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  // ---------- Validation & error mapping ----------
+  Future<void> _logout() async {
+    await ApiService.logout();
+    await _clearCachedProfileAndPrefs();
+    setState(() {
+      _errorMsg = null;
+      _showFullLogin = true;
+    });
+  }
+
+  // -------------------- Avatar --------------------
+  Future<void> _pickAvatar() async {
+    showModalBottomSheet(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Take Photo'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final picked = await ImagePicker().pickImage(source: ImageSource.camera, imageQuality: 90);
+                if (picked != null) await _cropAndSetAvatar(File(picked.path));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Choose from Gallery'),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
+                if (picked != null) await _cropAndSetAvatar(File(picked.path));
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _cropAndSetAvatar(File imageFile) async {
+    final cropped = await ImageCropper().cropImage(
+      sourcePath: imageFile.path,
+      aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
+      maxWidth: 256,
+      maxHeight: 256,
+      compressFormat: ImageCompressFormat.jpg,
+      compressQuality: 90,
+      uiSettings: [
+        AndroidUiSettings(
+          toolbarTitle: 'Crop Avatar',
+          lockAspectRatio: true,
+          initAspectRatio: CropAspectRatioPreset.square,
+        ),
+        IOSUiSettings(
+          title: 'Crop Avatar',
+          aspectRatioLockEnabled: true,
+        ),
+      ],
+    );
+    if (cropped == null) return;
+
+    final File croppedFile = File(cropped.path);
+    final dir = await getApplicationDocumentsDirectory();
+    final localAvatarPath = '${dir.path}/avatar.jpg';
+    final localAvatarFile = await croppedFile.copy(localAvatarPath);
+
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString('saved_avatar_local', localAvatarPath);
+    final provider = context.read<SettingsProvider>();
+    await provider.saveAvatar(localAvatarFile);
+
+    setState(() {
+      _cachedAvatarFile = localAvatarFile;
+      _avatarKey = UniqueKey();
+    });
+
+    // 上传
+    final email = provider.email;
+    if (email.isNotEmpty) {
+      final bytes = await localAvatarFile.readAsBytes();
+      final uploadResp = await ApiService.uploadAvatar(bytes, "avatar.jpg", email);
+      final url = uploadResp['url'];
+      if (url != null && (url as String).isNotEmpty) {
+        final resolved = ServerAddressService.resolve(url);
+        await provider.saveAvatarUrl(resolved);
+        // 缓存破坏
+        final withTs = '$resolved?t=${DateTime.now().millisecondsSinceEpoch}';
+        await _downloadAndSaveAvatar(withTs);
+        await _onAuthSuccess(
+          email,
+          _pwdLoginCtl.text,
+          provider.nickname,
+          resolved,
+          avatarLocalPath: localAvatarPath,
+        );
+        setState(() => _avatarKey = UniqueKey());
+      }
+    }
+  }
+
+  // -------------------- Verification Code --------------------
+  Future<void> _sendVerificationCode() async {
+    final email = _regEmailCtl.text.trim();
+    if (!email.contains('@')) {
+      setState(() => _regCodeMsg = "Please enter a valid email address.");
+      return;
+    }
+    setState(() {
+      _regCodeMsg = null;
+      _codeSent = false;
+      _codeTimeout = 0;
+    });
+
+    await ServerAddressService.applyToApi();
+    try {
+      final resp = await ApiService.sendVerificationCode(email);
+      if (resp.containsKey("msg")) {
+        setState(() {
+          _codeSent = true;
+          _codeTimeout = 60;
+          _regCodeMsg = "Verification code sent to $email.";
+        });
+        _timer?.cancel();
+        _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+          setState(() {
+            _codeTimeout -= 1;
+            if (_codeTimeout <= 0) t.cancel();
+          });
+        });
+      } else if (resp.containsKey("error")) {
+        setState(() => _regCodeMsg = _backendErrorToText(resp["error"]));
+      } else {
+        setState(() => _regCodeMsg = "Failed to send verification code.");
+      }
+    } catch (_) {
+      setState(() => _regCodeMsg = "Network or server error.");
+    }
+  }
+
+  // -------------------- Validation & mapping --------------------
   void _validateRegisterForm() {
-    final email = _regEmailController.text.trim();
-    final nickname = _regNicknameController.text.trim();
-    final pwd1 = _regPwdController.text;
-    final pwd2 = _regPwd2Controller.text;
-    final code = _regCodeController.text.trim();
+    final email = _regEmailCtl.text.trim();
+    final nickname = _regNicknameCtl.text.trim();
+    final pwd1 = _regPwdCtl.text;
+    final pwd2 = _regPwd2Ctl.text;
+    final code = _regCodeCtl.text.trim();
+
     final isPwdMatch = pwd1.isNotEmpty && pwd2.isNotEmpty && pwd1 == pwd2;
     final isEmail = email.contains('@');
     final isNickname = nickname.isNotEmpty;
     final isPwdValid = pwd1.length >= 6;
     final isCode = code.isNotEmpty;
+
     setState(() {
       _isRegFormValid = isEmail && isNickname && isPwdValid && isPwdMatch;
       _isCodeFilled = isCode;
@@ -467,8 +608,7 @@ class _StartupScreenState extends State<StartupScreen> {
     }
   }
 
-  // ---------- UI: selectors ----------
-  /// Unit selector row.
+  // -------------------- Small UI Pieces --------------------
   Widget _unitSelector() {
     final provider = context.watch<SettingsProvider>();
     return Row(
@@ -478,8 +618,8 @@ class _StartupScreenState extends State<StartupScreen> {
         OutlinedButton(
           onPressed: () async {
             provider.setUnit('feet');
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('saved_unit', 'feet');
+            final sp = await SharedPreferences.getInstance();
+            await sp.setString('saved_unit', 'feet');
           },
           style: OutlinedButton.styleFrom(
             backgroundColor: provider.unit == "feet" ? Colors.blueAccent : Colors.transparent,
@@ -496,8 +636,8 @@ class _StartupScreenState extends State<StartupScreen> {
         OutlinedButton(
           onPressed: () async {
             provider.setUnit('meter');
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('saved_unit', 'meter');
+            final sp = await SharedPreferences.getInstance();
+            await sp.setString('saved_unit', 'meter');
           },
           style: OutlinedButton.styleFrom(
             backgroundColor: provider.unit == "meter" ? Colors.blueAccent : Colors.transparent,
@@ -514,7 +654,6 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
-  /// Language selector dropdown.
   Widget _languageSelector() {
     final provider = context.watch<SettingsProvider>();
     return Row(
@@ -523,17 +662,17 @@ class _StartupScreenState extends State<StartupScreen> {
         const SizedBox(width: 8),
         DropdownButton<String>(
           value: provider.languageCode,
-          items: _languages.map((lang) {
-            return DropdownMenuItem(
-              value: lang['code'],
-              child: Text(lang['name'] ?? ""),
-            );
-          }).toList(),
+          items: _languages
+              .map((lang) => DropdownMenuItem(
+                    value: lang['code'],
+                    child: Text(lang['name'] ?? ""),
+                  ))
+              .toList(),
           onChanged: (String? value) async {
             if (value != null) {
               provider.setLanguage(value);
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setString('saved_language', value);
+              final sp = await SharedPreferences.getInstance();
+              await sp.setString('saved_language', value);
             }
           },
         ),
@@ -541,298 +680,169 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
-  /// Server selector (NEW): NYU / MU.
-  Widget _serverSelector() {
-    return Row(
+  // -------------------- Forms --------------------
+  Widget _buildLoginForm() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        const Text("Server:", style: TextStyle(fontSize: 18)),
-        const SizedBox(width: 8),
-        DropdownButton<String>(
-          value: _selectedServerKey,
-          items: _serverOptions.keys.map((key) {
-            return DropdownMenuItem(
-              value: key,
-              child: Text(key), // Display human-friendly key
-            );
-          }).toList(),
-          onChanged: (String? newKey) async {
-            if (newKey == null) return;
-            await _saveServerSelection(newKey);
-          },
-        ),
-        const SizedBox(width: 12),
-        // Display the base URL for user confirmation (read-only)
-        Flexible(
-          child: Text(
-            _serverAddress ?? _serverOptions[_selectedServerKey]!,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12, color: Colors.grey),
+        const Text("Welcome to UNav", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        // 服务器选择 + 可编辑地址
+        ServerSelector(onChanged: (_) {}),
+        const SizedBox(height: 16),
+
+        TextField(
+          controller: _emailCtl,
+          keyboardType: TextInputType.emailAddress,
+          decoration: const InputDecoration(
+            labelText: "Email",
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.email),
           ),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _pwdLoginCtl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: "Password",
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.lock),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _unitSelector(),
+        const SizedBox(height: 12),
+        _languageSelector(),
+        const SizedBox(height: 12),
+        if (_errorMsg != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Text(_errorMsg!, style: const TextStyle(color: Colors.red, fontSize: 16)),
+          ),
+        ElevatedButton(
+          onPressed: _isLoading ? null : _handleLogin,
+          style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
+          child: _isLoading ? const CircularProgressIndicator() : const Text("Login"),
         ),
       ],
     );
   }
 
-  // ---------- Logout ----------
-  Future<void> _logout() async {
-    await ApiService.logout();
-    await _clearCachedProfileAndPrefs();
-    setState(() {
-      _errorMsg = null;
-      _showFullLogin = true;
-    });
-  }
+  Widget _buildRegisterForm() {
+    final sendCodeEnabled = _isRegFormValid && !_codeSent && _codeTimeout == 0;
+    final registerEnabled = _isRegFormValid && _isCodeFilled && !_isLoading;
 
-  // ---------- Avatar pick/crop/upload ----------
-  Future<void> _pickAvatar() async {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        const Text("Register for UNav", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        ServerSelector(onChanged: (_) {}),
+        const SizedBox(height: 16),
+
+        TextField(
+          controller: _regEmailCtl,
+          keyboardType: TextInputType.emailAddress,
+          decoration: const InputDecoration(
+            labelText: "Email",
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.email_outlined),
+          ),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _regNicknameCtl,
+          decoration: const InputDecoration(
+            labelText: "Nickname",
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.person),
+          ),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _regPwdCtl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: "Password",
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.lock_outline),
+          ),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _regPwd2Ctl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: "Confirm Password",
+            border: OutlineInputBorder(),
+            prefixIcon: Icon(Icons.lock),
+          ),
+        ),
+        if (_regPwdMismatchMsg != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4.0),
+            child: Text(_regPwdMismatchMsg!, style: const TextStyle(color: Colors.red)),
+          ),
+        const SizedBox(height: 16),
+        Row(
           children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('Take Photo'),
-              onTap: () async {
-                Navigator.pop(context);
-                final picked = await ImagePicker().pickImage(source: ImageSource.camera, imageQuality: 90);
-                if (picked != null) await _cropAndSetAvatar(File(picked.path));
-              },
+            Expanded(
+              child: TextField(
+                controller: _regCodeCtl,
+                decoration: const InputDecoration(
+                  labelText: "Verification Code",
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.verified_user),
+                ),
+              ),
             ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Choose from Gallery'),
-              onTap: () async {
-                Navigator.pop(context);
-                final picked = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
-                if (picked != null) await _cropAndSetAvatar(File(picked.path));
-              },
+            const SizedBox(width: 12),
+            OutlinedButton(
+              onPressed: sendCodeEnabled ? _sendVerificationCode : null,
+              child: Text(
+                _codeTimeout > 0
+                    ? "Resend (${_codeTimeout}s)"
+                    : (_codeSent ? "Resend" : "Send Code"),
+              ),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  /// Crops image, saves locally, uploads to server, updates provider/cache, and forces avatar UI reload.
-  Future<void> _cropAndSetAvatar(File imageFile) async {
-    final cropped = await ImageCropper().cropImage(
-      sourcePath: imageFile.path,
-      aspectRatio: const CropAspectRatio(ratioX: 1, ratioY: 1),
-      maxWidth: 256,
-      maxHeight: 256,
-      compressFormat: ImageCompressFormat.jpg,
-      compressQuality: 90,
-      uiSettings: [
-        AndroidUiSettings(
-          toolbarTitle: 'Crop Avatar',
-          lockAspectRatio: true,
-          initAspectRatio: CropAspectRatioPreset.square,
-        ),
-        IOSUiSettings(
-          title: 'Crop Avatar',
-          aspectRatioLockEnabled: true,
+        if (_regCodeMsg != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4.0),
+            child: Text(_regCodeMsg!, style: const TextStyle(color: Colors.red)),
+          ),
+        const SizedBox(height: 16),
+        _unitSelector(),
+        const SizedBox(height: 12),
+        _languageSelector(),
+        const SizedBox(height: 12),
+        if (_errorMsg != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Text(_errorMsg!, style: const TextStyle(color: Colors.red, fontSize: 16)),
+          ),
+        ElevatedButton(
+          onPressed: registerEnabled ? _handleRegister : null,
+          style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
+          child: _isLoading ? const CircularProgressIndicator() : const Text("Register"),
         ),
       ],
     );
-    if (cropped == null) return;
-
-    final File croppedFile = File(cropped.path);
-    final appDocDir = await getApplicationDocumentsDirectory();
-    final localAvatarPath = '${appDocDir.path}/avatar.jpg';
-    final localAvatarFile = await croppedFile.copy(localAvatarPath);
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('saved_avatar_local', localAvatarPath);
-    final provider = context.read<SettingsProvider>();
-    await provider.saveAvatar(localAvatarFile);
-
-    setState(() {
-      _cachedAvatarFile = localAvatarFile;
-      _avatarKey = UniqueKey(); // Force UI reload
-    });
-
-    // Upload to server
-    final email = provider.email;
-    if (email.isNotEmpty) {
-      final bytes = await localAvatarFile.readAsBytes();
-      final uploadResp = await ApiService.uploadAvatar(bytes, "avatar.jpg", email);
-      final url = uploadResp['url'];
-      if (url != null && (url as String).isNotEmpty) {
-        final resolved = _resolveUrl(url);
-        await provider.saveAvatarUrl(resolved);
-        // Bust caching
-        final withTs = '$resolved?t=${DateTime.now().millisecondsSinceEpoch}';
-        await _downloadAndSaveAvatar(withTs);
-        await _onAuthSuccess(
-          email,
-          _loginPwdController.text,
-          provider.nickname,
-          resolved,
-          avatarLocalPath: localAvatarPath,
-        );
-        setState(() => _avatarKey = UniqueKey());
-      }
-    }
   }
 
-  // ---------- Verification code ----------
-  Future<void> _sendVerificationCode() async {
-    final email = _regEmailController.text.trim();
-    if (!email.contains('@')) {
-      setState(() => _regCodeMsg = "Please enter a valid email address.");
-      return;
-    }
-    setState(() {
-      _regCodeMsg = null;
-      _codeSent = false;
-      _codeTimeout = 0;
-    });
-
-    // Ensure ApiService uses the selected server
-    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
-
-    try {
-      final resp = await ApiService.sendVerificationCode(email);
-      if (resp.containsKey("msg")) {
-        setState(() {
-          _codeSent = true;
-          _codeTimeout = 60;
-          _regCodeMsg = "Verification code sent to $email.";
-        });
-        _timer?.cancel();
-        _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          setState(() {
-            _codeTimeout -= 1;
-            if (_codeTimeout <= 0) {
-              timer.cancel();
-            }
-          });
-        });
-      } else if (resp.containsKey("error")) {
-        setState(() => _regCodeMsg = _backendErrorToText(resp["error"]));
-      } else {
-        setState(() => _regCodeMsg = "Failed to send verification code.");
-      }
-    } catch (_) {
-      setState(() => _regCodeMsg = "Network or server error.");
-    }
-  }
-
-  // ---------- Auto-login enter ----------
-  Future<void> _enterAppWithAutoLogin() async {
-    final provider = context.read<SettingsProvider>();
-    final prefs = await SharedPreferences.getInstance();
-    final email = prefs.getString('saved_email');
-    final pwd = prefs.getString('saved_password');
-    final nickname = prefs.getString('saved_nickname');
-    final avatarUrl = prefs.getString('saved_avatar_url');
-    final localAvatarPath = prefs.getString('saved_avatar_local');
-    if (email == null || pwd == null) {
-      setState(() {
-        _showFullLogin = true;
-        _errorMsg = null;
-      });
-      return;
-    }
-    setState(() {
-      _isLoading = true;
-      _errorMsg = null;
-    });
-
-    // Ensure ApiService uses the selected server
-    await _saveServerAddress(_serverAddress ?? _serverOptions[_selectedServerKey]!);
-
-    final resp = await ApiService.login(email, pwd);
-    if (resp.containsKey('error')) {
-      await _clearCachedProfileAndPrefs();
-      setState(() {
-        _isLoading = false;
-        _showFullLogin = true;
-        _errorMsg = _backendErrorToText(resp['error']);
-      });
-      return;
-    }
-    provider.setEmail(email);
-    provider.setNickname(resp['nickname'] ?? nickname ?? "");
-    final serverAvatarUrl = resp['avatar_url'] as String?;
-    if (serverAvatarUrl != null && serverAvatarUrl.isNotEmpty) {
-      final fullUrl = _resolveUrl(serverAvatarUrl);
-      await _downloadAndSaveAvatar(fullUrl);
-      await provider.saveAvatarUrl(fullUrl);
-      setState(() => _avatarKey = UniqueKey());
-    } else if (localAvatarPath != null && File(localAvatarPath).existsSync()) {
-      await provider.saveAvatar(File(localAvatarPath));
-    } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
-      await provider.saveAvatarUrl(_resolveUrl(avatarUrl));
-    }
-    await _onAuthSuccess(
-      email,
-      pwd,
-      provider.nickname,
-      provider.avatarUrl,
-      avatarLocalPath: localAvatarPath,
-    );
-  }
-
-  // ---------- Server persistence ----------
-  /// Loads server address and selection (NYU / MU) from storage; sets ApiService base.
-  Future<void> _loadServerAddress() async {
-    final prefs = await SharedPreferences.getInstance();
-    final savedKey = prefs.getString("saved_server_key") ?? 'NYU';
-    final savedAddr = prefs.getString("server_address") ?? _serverOptions[savedKey]!;
-    ApiService.setServer(savedAddr);
-    setState(() {
-      _selectedServerKey = _serverOptions.containsKey(savedKey) ? savedKey : 'NYU';
-      _serverAddress = savedAddr;
-    });
-  }
-
-  /// Saves server address (base URL) to storage and updates ApiService.
-  Future<void> _saveServerAddress(String addr) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("server_address", addr);
-    ApiService.setServer(addr);
-    setState(() => _serverAddress = addr);
-  }
-
-  /// Saves the chosen server key and corresponding address.
-  Future<void> _saveServerSelection(String key) async {
-    final base = _serverOptions[key]!;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("saved_server_key", key);
-    await _saveServerAddress(base);
-    setState(() {
-      _selectedServerKey = key;
-    });
-  }
-
-  // ---------- Lifecycle ----------
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _emailController.dispose();
-    _loginPwdController.dispose();
-    _regEmailController.dispose();
-    _regNicknameController.dispose();
-    _regPwdController.dispose();
-    _regPwd2Controller.dispose();
-    _regCodeController.dispose();
-    super.dispose();
-  }
-
-  // ---------- Build ----------
+  // -------------------- Build --------------------
   @override
   Widget build(BuildContext context) {
-    final settingsProvider = context.watch<SettingsProvider>();
-    final avatarFile = settingsProvider.avatarFile ?? _cachedAvatarFile;
-    final avatarUrl = (settingsProvider.avatarUrl != null && settingsProvider.avatarUrl!.isNotEmpty)
-        ? settingsProvider.avatarUrl!
+    final sp = context.watch<SettingsProvider>();
+    final avatarFile = sp.avatarFile ?? _cachedAvatarFile;
+    final avatarUrl = (sp.avatarUrl != null && sp.avatarUrl!.isNotEmpty)
+        ? sp.avatarUrl!
         : (_cachedAvatarUrl ?? "");
 
-    // Profile card if already logged in and not in register/forced-login mode
-    if ((settingsProvider.isLoggedIn ?? false) && !_registerMode && !_showFullLogin) {
+    // 已登录且不在注册/强制登录模式：展示用户卡片 & 快速进入应用
+    if ((sp.isLoggedIn ?? false) && !_registerMode && !_showFullLogin) {
       return Scaffold(
         appBar: AppBar(
           title: const Text('UNav'),
@@ -848,7 +858,6 @@ class _StartupScreenState extends State<StartupScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Quick access to avatar update
               GestureDetector(
                 onTap: _pickAvatar,
                 child: CircleAvatar(
@@ -865,18 +874,17 @@ class _StartupScreenState extends State<StartupScreen> {
               ),
               const SizedBox(height: 18),
               Text(
-                settingsProvider.nickname.isNotEmpty
-                    ? settingsProvider.nickname
-                    : settingsProvider.email.isNotEmpty
-                        ? settingsProvider.email
+                sp.nickname.isNotEmpty
+                    ? sp.nickname
+                    : sp.email.isNotEmpty
+                        ? sp.email
                         : (_cachedNickname ?? _cachedEmail ?? ""),
                 style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 16),
-              // Show current server and allow changing it before entering
               Padding(
                 padding: const EdgeInsets.only(bottom: 12.0),
-                child: _serverSelector(),
+                child: ServerSelector(onChanged: (_) {}),
               ),
               ElevatedButton(
                 onPressed: _isLoading ? null : _enterAppWithAutoLogin,
@@ -894,7 +902,7 @@ class _StartupScreenState extends State<StartupScreen> {
       );
     }
 
-    // Login / Register forms
+    // 登录 / 注册页
     return Scaffold(
       appBar: AppBar(
         title: const Text('UNav'),
@@ -924,9 +932,6 @@ class _StartupScreenState extends State<StartupScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Server selector visible on auth screens as well
-              _serverSelector(),
-              const SizedBox(height: 16),
               _registerMode ? _buildRegisterForm() : _buildLoginForm(),
             ],
           ),
@@ -940,16 +945,12 @@ class _StartupScreenState extends State<StartupScreen> {
             children: [
               if (!_registerMode)
                 TextButton(
-                  onPressed: () => setState(() {
-                    _registerMode = true;
-                  }),
+                  onPressed: () => setState(() => _registerMode = true),
                   child: const Text("No account? Register", style: TextStyle(fontSize: 16)),
                 ),
               if (_registerMode)
                 TextButton(
-                  onPressed: () => setState(() {
-                    _registerMode = false;
-                  }),
+                  onPressed: () => setState(() => _registerMode = false),
                   child: const Text("Already registered? Login", style: TextStyle(fontSize: 16)),
                 ),
             ],
@@ -959,149 +960,58 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
-  // ---------- Sub-forms ----------
-  /// Login form (email, password)
-  Widget _buildLoginForm() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        const Text("Welcome to UNav", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 24),
-        TextField(
-          controller: _emailController,
-          keyboardType: TextInputType.emailAddress,
-          decoration: const InputDecoration(
-            labelText: "Email",
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.email),
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _loginPwdController,
-          obscureText: true,
-          decoration: const InputDecoration(
-            labelText: "Password",
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.lock),
-          ),
-        ),
-        const SizedBox(height: 20),
-        _unitSelector(),
-        const SizedBox(height: 12),
-        _languageSelector(),
-        const SizedBox(height: 12),
-        if (_errorMsg != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8.0),
-            child: Text(_errorMsg!, style: const TextStyle(color: Colors.red, fontSize: 16)),
-          ),
-        ElevatedButton(
-          onPressed: _isLoading ? null : _handleLogin,
-          style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
-          child: _isLoading ? const CircularProgressIndicator() : const Text("Login"),
-        ),
-      ],
-    );
-  }
+  // -------------------- Enter with auto login --------------------
+  Future<void> _enterAppWithAutoLogin() async {
+    final provider = context.read<SettingsProvider>();
+    final sp = await SharedPreferences.getInstance();
+    final email = sp.getString('saved_email');
+    final pwd = sp.getString('saved_password');
+    final nickname = sp.getString('saved_nickname');
+    final avatarUrl = sp.getString('saved_avatar_url');
+    final localAvatarPath = sp.getString('saved_avatar_local');
+    if (email == null || pwd == null) {
+      setState(() {
+        _showFullLogin = true;
+        _errorMsg = null;
+      });
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _errorMsg = null;
+    });
 
-  /// Registration form (email, nickname, password, confirm, code)
-  Widget _buildRegisterForm() {
-    final sendCodeEnabled = _isRegFormValid && !_codeSent && _codeTimeout == 0;
-    final registerEnabled = _isRegFormValid && _isCodeFilled && !_isLoading;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        const Text("Register for UNav", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 24),
-        TextField(
-          controller: _regEmailController,
-          keyboardType: TextInputType.emailAddress,
-          decoration: const InputDecoration(
-            labelText: "Email",
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.email_outlined),
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _regNicknameController,
-          decoration: const InputDecoration(
-            labelText: "Nickname",
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.person),
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _regPwdController,
-          obscureText: true,
-          decoration: const InputDecoration(
-            labelText: "Password",
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.lock_outline),
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _regPwd2Controller,
-          obscureText: true,
-          decoration: const InputDecoration(
-            labelText: "Confirm Password",
-            border: OutlineInputBorder(),
-            prefixIcon: Icon(Icons.lock),
-          ),
-        ),
-        if (_regPwdMismatchMsg != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4.0),
-            child: Text(_regPwdMismatchMsg!, style: const TextStyle(color: Colors.red)),
-          ),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _regCodeController,
-                decoration: const InputDecoration(
-                  labelText: "Verification Code",
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.verified_user),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            OutlinedButton(
-              onPressed: sendCodeEnabled ? _sendVerificationCode : null,
-              child: Text(
-                _codeTimeout > 0
-                    ? "Resend (${_codeTimeout}s)"
-                    : (_codeSent ? "Resend" : "Send Code"),
-              ),
-            ),
-          ],
-        ),
-        if (_regCodeMsg != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4.0),
-            child: Text(_regCodeMsg!, style: const TextStyle(color: Colors.red)),
-          ),
-        const SizedBox(height: 20),
-        _unitSelector(),
-        const SizedBox(height: 12),
-        _languageSelector(),
-        const SizedBox(height: 12),
-        if (_errorMsg != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8.0),
-            child: Text(_errorMsg!, style: const TextStyle(color: Colors.red, fontSize: 16)),
-          ),
-        ElevatedButton(
-          onPressed: registerEnabled ? _handleRegister : null,
-          style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
-          child: _isLoading ? const CircularProgressIndicator() : const Text("Register"),
-        ),
-      ],
+    await ServerAddressService.applyToApi();
+
+    final resp = await ApiService.login(email, pwd);
+    if (resp.containsKey('error')) {
+      await _clearCachedProfileAndPrefs();
+      setState(() {
+        _isLoading = false;
+        _showFullLogin = true;
+        _errorMsg = _backendErrorToText(resp['error']);
+      });
+      return;
+    }
+    provider.setEmail(email);
+    provider.setNickname(resp['nickname'] ?? nickname ?? "");
+    final serverAvatarUrl = resp['avatar_url'] as String?;
+    if (serverAvatarUrl != null && serverAvatarUrl.isNotEmpty) {
+      final fullUrl = ServerAddressService.resolve(serverAvatarUrl);
+      await _downloadAndSaveAvatar(fullUrl);
+      await provider.saveAvatarUrl(fullUrl);
+      setState(() => _avatarKey = UniqueKey());
+    } else if (localAvatarPath != null && File(localAvatarPath).existsSync()) {
+      await provider.saveAvatar(File(localAvatarPath));
+    } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      await provider.saveAvatarUrl(ServerAddressService.resolve(avatarUrl));
+    }
+    await _onAuthSuccess(
+      email,
+      pwd,
+      provider.nickname,
+      provider.avatarUrl,
+      avatarLocalPath: localAvatarPath,
     );
   }
 }

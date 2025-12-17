@@ -1,10 +1,13 @@
+// lib/screens/navigation_screen.dart
 import 'dart:typed_data';
 import 'dart:ui' as ui;
-import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter/services.dart'; // HapticFeedback + rootBundle
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:audioplayers/audioplayers.dart';
+
 import '../api/api_service.dart';
 import '../widgets/floorplan_path_painter.dart';
 import '../services/tts_service.dart';
@@ -22,9 +25,6 @@ const Map<String, List<String>> forwardKeywords = {
   'th': ['เดินตรงไป'],
 };
 
-/// NavigationScreen overlays the navigation path over the floorplan,
-/// displays a floating camera preview for localization input,
-/// supports single-tap capture and toggles between first- and third-person views.
 class NavigationScreen extends StatefulWidget {
   final String selectedPlaceId;
   final String selectedPlaceName;
@@ -52,22 +52,32 @@ class NavigationScreen extends StatefulWidget {
 }
 
 class _NavigationScreenState extends State<NavigationScreen> with WidgetsBindingObserver {
+  // ---- Floorplan / path rendering state ----
   Uint8List? _floorplanBytes;
   ui.Image? _decodedFloorplanImage;
   String? _lastMapKey;
-  CameraController? _cameraController;
-  bool _isCameraInitialized = false;
-  bool _isLoading = false;
   Map<String, dynamic>? _navResultData;
   List<Offset> _currentPath = [];
 
-  // Toggle between 3rd-person and 1st-person
+  // ---- Camera state ----
+  CameraController? _cameraController;
+  bool _isCameraInitialized = false;
+  bool _isLoading = false;
+
+  // ---- UI mode ----
   bool _firstPerson = false;
+
+  // ---- Low-latency UI sound (audioplayers) ----
+  late final AudioPlayer _playerSend;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    _configureAudioForUiSounds(); // set audio context
+    _initUiSoundPlayer();         // prepare player + preload asset
+
     _fetchFloorplan();
     _initCamera();
   }
@@ -76,6 +86,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cameraController?.dispose();
+    _playerSend.dispose();
     super.dispose();
   }
 
@@ -89,7 +100,37 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     }
   }
 
-  /// Loads and decodes the floorplan image.
+  /// Configure audio context for short UI sounds (Android/iOS)
+  Future<void> _configureAudioForUiSounds() async {
+    try {
+      await AudioPlayer.global.setAudioContext(const AudioContext(
+        android: AudioContextAndroid(
+          contentType: AndroidContentType.sonification,
+          usageType: AndroidUsageType.assistanceSonification,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+          isSpeakerphoneOn: true,
+          stayAwake: false,
+        ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.ambient,
+          options: [AVAudioSessionOptions.mixWithOthers],
+        ),
+      ));
+    } catch (_) {}
+  }
+
+  /// Prepare a low-latency player and preload the asset.
+  Future<void> _initUiSoundPlayer() async {
+    _playerSend = AudioPlayer()..setReleaseMode(ReleaseMode.stop);
+    try {
+      await _playerSend.setPlayerMode(PlayerMode.lowLatency);
+      await _playerSend.setVolume(1.0);
+      await _playerSend.setSource(AssetSource('assets/sounds/send.wav')); // wav is fine
+    } catch (_) {}
+  }
+
+  // ========================= Camera & Floorplan =========================
+
   Future<void> _fetchFloorplan() async {
     try {
       final fp = await ApiService.getFloorplan();
@@ -111,7 +152,6 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     }
   }
 
-  /// Initializes the camera for preview/capture.
   Future<void> _initCamera() async {
     try {
       final cameras = await availableCameras();
@@ -133,44 +173,50 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     }
   }
 
-  /// Single-tap to capture and upload.
+  // ========================= Capture & Send =========================
+
   void _onTapCapture() {
     _captureAndSend();
   }
 
-  /// Captures and sends an image to backend, then processes the navigation result.
+  /// Play a short local audio + haptic when sending begins.
+  Future<void> _playSendCue() async {
+    try {
+      // Restart from zero to guarantee the sound plays immediately
+      await _playerSend.seek(Duration.zero);
+      await _playerSend.resume();
+      await HapticFeedback.mediumImpact();
+      await HapticFeedback.vibrate();
+    } catch (_) {}
+  }
+
   Future<void> _captureAndSend() async {
     if (_isLoading || !_isCameraInitialized || _cameraController == null) return;
     setState(() => _isLoading = true);
+
+    // 1) Play cue first
+    await _playSendCue();
+
+    // 2) Delay a bit to avoid focus race with camera shutter
+    await Future.delayed(const Duration(milliseconds: 150)); // 150ms for extra safety
+
     try {
       final file = await _cameraController!.takePicture();
       final rawBytes = await file.readAsBytes();
       final fixedBytes = await fixImageOrientation(rawBytes);
       final result = await ApiService.unavNavigation(fixedBytes, 'query.jpg');
       if (!mounted) return;
-      if (result['success'] != true) {
+
+      if (result['success'] == true) {
+        await _processNavResult(result);
+      } else {
         await _handleError(result['error']?.toString() ?? 'Unknown error');
         return;
       }
-      await _processNavResult(result);
     } catch (_) {
       await _handleError(null);
     } finally {
       if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _handleError(String? err) async {
-    final lang = context.read<SettingsProvider>().languageCode;
-    String msg = err?.isNotEmpty == true
-      ? err!
-      : lang == 'zh' ? '网络或内部错误。' : lang == 'th' ? 'เกิดข้อผิดพลาดของระบบหรือเครือข่าย' : 'Network or internal error.';
-    await TTSService.setLanguage(lang);
-    await TTSService.speak(msg);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: Colors.red),
-      );
     }
   }
 
@@ -180,10 +226,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     final w = frame.image.width;
     final h = frame.image.height;
     const maxSide = 640;
-    int newW, newH;
-    if (w >= h) { newW = maxSide; newH = (h * maxSide / w).round(); }
-    else { newH = maxSide; newW = (w * maxSide / h).round(); }
-    return await FlutterImageCompress.compressWithList(
+    final bool landscape = w >= h;
+    final int newW = landscape ? maxSide : (w * maxSide / h).round();
+    final int newH = landscape ? (h * maxSide / w).round() : maxSide;
+
+    return FlutterImageCompress.compressWithList(
       imageBytes,
       format: CompressFormat.jpeg,
       quality: 99,
@@ -192,38 +239,38 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       autoCorrectionAngle: true,
     );
   }
-  
-  /// Processes the navigation result using structured commands with tags and metadata.
+
+  // ========================= Result Handling & TTS =========================
+
   Future<void> _processNavResult(Map<String, dynamic> result) async {
-    // Extract path keys and coordinates for floor segmentation
     final pathKeys = result['result']?['path_keys'] ?? [];
     final pathCoords = result['result']?['path_coords'] ?? [];
     final floorSegs = splitPathByFloor(pathKeys, pathCoords);
 
-    // Parse command list from backend result; ensure each is a map
     final List<dynamic> cmdsRaw = result['cmds'] ?? [];
-    final List<Map<String, dynamic>> cmds = cmdsRaw
-        .whereType<Map<String, dynamic>>()
-        .cast<Map<String, dynamic>>()
-        .toList();
+    List<Map<String, dynamic>> cmds =
+        cmdsRaw.whereType<Map<String, dynamic>>().cast<Map<String, dynamic>>().toList();
+
+    // 根据 announceCurrentLocation 设置过滤命令
+    final provider = context.read<SettingsProvider>();
+    if (!provider.announceCurrentLocation) {
+      // 过滤掉 "start_in" 命令（播报当前位置信息）
+      cmds = cmds.where((cmd) {
+        final tag = cmd['tag'] as String?;
+        return tag != 'start_in';
+      }).toList();
+    }
 
     if (cmds.isNotEmpty) {
-      // Set TTS language to current user setting
-      final lang = context.read<SettingsProvider>().languageCode;
+      final lang = provider.languageCode;
       await TTSService.setLanguage(lang);
 
-      // Extract the current group of navigation commands to be spoken
       final group = _extractCurrentCommandGroup(cmds);
-
-      // Only speak the 'text' field from each command
-      final groupTexts = group
-          .map((cmd) => cmd['text'] as String? ?? '')
-          .where((t) => t.isNotEmpty)
-          .toList();
+      final groupTexts =
+          group.map((cmd) => cmd['text'] as String? ?? '').where((t) => t.isNotEmpty).toList();
       TTSService.speakSequentially(groupTexts);
     }
 
-    // Determine if the map (floor/building) has changed; reload if needed
     final mapKey = (result['best_map_key'] as List).take(3).join('|');
     if (mapKey != _lastMapKey) {
       await _fetchFloorplan();
@@ -235,21 +282,30 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     });
   }
 
-  /// Extracts the current group of navigation commands for sequential TTS playback.
-  ///
-  /// Logic:
-  /// - Collect commands up to and including the first 'forward' or 'forward_door' command.
-  /// - If such a command exists, also append any following non-turn/non-forward instructions.
-  /// - Designed for step-by-step navigation guidance.
-  ///
-  /// [cmds] - List of structured command maps from the backend.
-  /// Returns a sublist of commands to be spoken in this navigation step.
+  Future<void> _handleError(String? err) async {
+    final lang = context.read<SettingsProvider>().languageCode;
+    final msg = err?.isNotEmpty == true
+        ? err!
+        : lang == 'zh'
+            ? '网络或内部错误。'
+            : lang == 'th'
+                ? 'เกิดข้อผิดพลาดของระบบหรือเครือข่าย'
+                : 'Network or internal error.';
+    await TTSService.setLanguage(lang);
+    await TTSService.speak(msg);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   List<Map<String, dynamic>> _extractCurrentCommandGroup(List<Map<String, dynamic>> cmds) {
     if (cmds.isEmpty) return [];
     final result = <Map<String, dynamic>>[];
     bool foundForward = false;
     int i = 0;
-    // Collect commands up to and including the first 'forward' command
+
     for (; i < cmds.length; ++i) {
       result.add(cmds[i]);
       if (_isForwardTag(cmds[i]['tag'])) {
@@ -259,7 +315,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       }
     }
     if (!foundForward) return result;
-    // Add any following annotation or landmark (stop at next turn or forward)
+
     for (; i < cmds.length; ++i) {
       final tag = cmds[i]['tag'] as String? ?? '';
       if (_isTurnTag(tag) || _isForwardTag(tag)) break;
@@ -268,16 +324,10 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     return result;
   }
 
-  /// Checks if the command tag represents a forward movement.
-  bool _isForwardTag(String? tag) {
-    return tag == 'forward' || tag == 'forward_door';
-  }
+  bool _isForwardTag(String? tag) => tag == 'forward' || tag == 'forward_door';
+  bool _isTurnTag(String? tag) => tag == 'turn' || tag == 'u_turn';
 
-  /// Checks if the command tag represents a turn or U-turn.
-  bool _isTurnTag(String? tag) {
-    return tag == 'turn' || tag == 'u_turn';
-  }
-
+  // ========================= UI Building =========================
 
   Widget _buildCameraPreview(Orientation orientation) {
     if (!_isCameraInitialized || _cameraController == null) {
@@ -287,9 +337,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
           color: Colors.black38,
           width: orientation == Orientation.portrait ? 120 : 160,
           height: orientation == Orientation.portrait ? 160 : 120,
-          child: const Center(
-            child: Icon(Icons.videocam_off, color: Colors.white),
-          ),
+          child: const Center(child: Icon(Icons.videocam_off, color: Colors.white)),
         ),
       );
     }
@@ -301,6 +349,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     const base = 200.0;
     final width = orientation == Orientation.portrait ? base * aspectRatio : base;
     final height = orientation == Orientation.portrait ? base : base / aspectRatio;
+
     return GestureDetector(
       onTap: _onTapCapture,
       child: ClipRRect(
@@ -327,7 +376,6 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
           return Stack(
             fit: StackFit.expand,
             children: [
-              // Floorplan + path painter
               GestureDetector(
                 onTap: _onTapCapture,
                 child: Stack(
@@ -356,15 +404,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
                   ],
                 ),
               ),
-
-              // Camera preview
               Positioned(
                 bottom: 24,
                 right: 16,
                 child: _buildCameraPreview(orientation),
               ),
-
-              // Avatar toggle button
               SafeArea(
                 child: Align(
                   alignment: Alignment.topCenter,
@@ -372,26 +416,19 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
                     onTap: () => setState(() => _firstPerson = !_firstPerson),
                     child: CircleAvatar(
                       radius: 24,
-                      backgroundImage: Provider.of<SettingsProvider>(context, listen: false)
-                                  .avatarUrl !=
-                              null
-                          ? NetworkImage(
-                              Provider.of<SettingsProvider>(context, listen: false)
-                                  .avatarUrl!)
-                          : const AssetImage('assets/avatar_placeholder.png')
-                              as ImageProvider,
+                      backgroundImage:
+                          Provider.of<SettingsProvider>(context, listen: false).avatarUrl != null
+                              ? NetworkImage(
+                                  Provider.of<SettingsProvider>(context, listen: false).avatarUrl!)
+                              : const AssetImage('assets/avatar_placeholder.png') as ImageProvider,
                     ),
                   ),
                 ),
               ),
-
-              // Loading indicator
               if (_isLoading)
                 const Center(
                   child: CircularProgressIndicator(color: Colors.white),
                 ),
-
-              // Back button
               SafeArea(
                 child: Align(
                   alignment: Alignment.topLeft,

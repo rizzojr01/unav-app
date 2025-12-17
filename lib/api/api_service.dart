@@ -212,6 +212,16 @@ class ApiService {
     return _runTask("select_language", {"language": languageCode});
   }
 
+  /// Sets whether to announce current location during navigation.
+  /// Returns: { "msg": ... } or { "error": ... }
+  static Future<Map<String, dynamic>> setAnnounceLocation(bool announce) async {
+    return _runTask("set_announce_location", {"announce": announce});
+  }
+
+  static Future<Map<String, dynamic>> selectTurnMode(String mode) async {
+    return _runTask("select_turn_mode", {"turn_mode": mode});
+  }
+
   /// Retrieves the current floorplan as an image (Uint8List).
   static Future<Uint8List?> getFloorplan() async {
     final resp = await _runTask("get_floorplan", {});

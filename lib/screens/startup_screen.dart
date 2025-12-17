@@ -17,11 +17,11 @@ import '../widgets/server_selector.dart';
 import 'place_select_screen.dart';
 
 /// StartupScreen
-/// - 登录 / 注册
-/// - 自动登录 & 本地缓存(邮箱/昵称/头像/单位/语言)
-/// - 头像选择/裁剪/上传
-/// - 服务器选择（院校Key + 可编辑地址）
-/// - 相对URL 统一用 ServerAddressService.resolve 解析
+/// - Login / Register
+/// - Auto login & local cache (email/nickname/avatar/unit/language/turn mode)
+/// - Avatar pick/crop/upload
+/// - Server selector (school key + editable URL)
+/// - Relative URLs resolved by ServerAddressService.resolve
 class StartupScreen extends StatefulWidget {
   const StartupScreen({super.key});
 
@@ -46,7 +46,7 @@ class _StartupScreenState extends State<StartupScreen> {
   bool _showFullLogin = false;
   String? _errorMsg;
 
-  // 注册表单状态
+  // Register form state
   bool _isRegFormValid = false;
   bool _isCodeFilled = false;
   String? _regPwdMismatchMsg;
@@ -67,23 +67,31 @@ class _StartupScreenState extends State<StartupScreen> {
     {'code': 'th', 'name': 'ไทย'},
   ];
 
+  // -------------------- Turn Modes --------------------
+  // 'default' -> classic clock/qual style
+  // 'deg15'   -> left/right + degrees (15° quantization); U-turn still says "Make a U-turn"
+  final List<Map<String, String>> _turnModes = const [
+    {'code': 'default', 'name': 'Default'},
+    {'code': 'deg15', 'name': 'Degrees (15°)'},
+  ];
+
   // -------------------- Lifecycle --------------------
   @override
   void initState() {
     super.initState();
-    // 1) 先让 ApiService 使用当前保存的服务器
+    // 1) Let ApiService use the stored server first
     ServerAddressService.applyToApi();
-    // 2) Provider 的 unit/language 先加载
-    _loadUnitAndLanguageToProvider();
-    // 3) 读取缓存资料（包含头像本地/远端）
+    // 2) Load unit/language/turnMode into Provider
+    _loadUnitLanguageTurnModeToProvider();
+    // 3) Load cached profile (including avatar local/remote)
     _loadCachedProfileAndPrefs();
-    // 4) 监听注册表单校验
+    // 4) Register form validation listeners
     _regPwdCtl.addListener(_validateRegisterForm);
     _regPwd2Ctl.addListener(_validateRegisterForm);
     _regEmailCtl.addListener(_validateRegisterForm);
     _regNicknameCtl.addListener(_validateRegisterForm);
     _regCodeCtl.addListener(_validateRegisterForm);
-    // 5) 自动登录
+    // 5) Auto login
     _tryAutoLogin();
   }
 
@@ -101,12 +109,19 @@ class _StartupScreenState extends State<StartupScreen> {
   }
 
   // -------------------- Loaders --------------------
-  Future<void> _loadUnitAndLanguageToProvider() async {
+  Future<void> _loadUnitLanguageTurnModeToProvider() async {
     final sp = await SharedPreferences.getInstance();
     final unit = sp.getString('saved_unit') ?? "feet";
     final lang = sp.getString('saved_language') ?? "en";
+    final turnMode = sp.getString('saved_turn_mode') ?? "default";
+    final announceLocation = sp.getBool('saved_announce_location') ?? false;
     final provider = context.read<SettingsProvider>();
-    provider.setAll(language: lang, unit: unit);
+    await provider.setAll(
+      language: lang, 
+      unit: unit, 
+      turnMode: turnMode,
+      announceCurrentLocation: announceLocation,
+    );
   }
 
   Future<void> _loadCachedProfileAndPrefs() async {
@@ -119,7 +134,15 @@ class _StartupScreenState extends State<StartupScreen> {
       _cachedLanguage = sp.getString('saved_language') ?? "en";
     });
     final provider = context.read<SettingsProvider>();
-    provider.setAll(language: _cachedLanguage!, unit: _cachedUnit!);
+    final turnMode = sp.getString('saved_turn_mode') ?? "default";
+    final announceLocation = sp.getBool('saved_announce_location') ?? false;
+    await provider.setAll(
+      language: _cachedLanguage!, 
+      unit: _cachedUnit!, 
+      turnMode: turnMode,
+      announceCurrentLocation: announceLocation,  // 新增
+    );
+
     provider.setEmail(_cachedEmail ?? "");
     provider.setNickname(_cachedNickname ?? "");
 
@@ -153,7 +176,7 @@ class _StartupScreenState extends State<StartupScreen> {
         await context.read<SettingsProvider>().saveAvatar(f);
       }
     } catch (_) {
-      // 忽略头像下载错误
+      // Ignore avatar download errors silently
     }
   }
 
@@ -165,10 +188,11 @@ class _StartupScreenState extends State<StartupScreen> {
     final avatarUrl = sp.getString('saved_avatar_url');
     final unit = sp.getString('saved_unit') ?? "feet";
     final lang = sp.getString('saved_language') ?? "en";
+    final turnMode = sp.getString('saved_turn_mode') ?? "default";
     final provider = context.read<SettingsProvider>();
 
     if (email != null && pwd != null) {
-      // 防止用户刚改了服务器地址，这里再同步一次
+      // Sync ApiService with current server setting again
       await ServerAddressService.applyToApi();
       final resp = await ApiService.login(email, pwd);
       if (!resp.containsKey('error')) {
@@ -181,12 +205,13 @@ class _StartupScreenState extends State<StartupScreen> {
           await provider.saveAvatarUrl(full);
           await _saveProfileAndPrefs(
             email, pwd, provider.nickname, full, unit, lang,
+            turnMode: turnMode,
             avatarLocalPath: _cachedAvatarFile?.path,
           );
         } else if (avatarUrl != null && avatarUrl.isNotEmpty) {
           await provider.saveAvatarUrl(ServerAddressService.resolve(avatarUrl));
         }
-        provider.setAll(language: lang, unit: unit);
+        await provider.setAll(language: lang, unit: unit, turnMode: turnMode);
         await provider.setLoggedIn(true);
         setState(() {
           _showFullLogin = false;
@@ -213,6 +238,7 @@ class _StartupScreenState extends State<StartupScreen> {
     String? avatarUrl,
     String unit,
     String language, {
+    String turnMode = "default",
     String? avatarLocalPath,
   }) async {
     final sp = await SharedPreferences.getInstance();
@@ -222,6 +248,7 @@ class _StartupScreenState extends State<StartupScreen> {
     if (avatarUrl != null) await sp.setString('saved_avatar_url', avatarUrl);
     await sp.setString('saved_unit', unit);
     await sp.setString('saved_language', language);
+    await sp.setString('saved_turn_mode', turnMode);
     if (avatarLocalPath != null) await sp.setString('saved_avatar_local', avatarLocalPath);
     setState(() {
       _cachedEmail = email;
@@ -229,6 +256,7 @@ class _StartupScreenState extends State<StartupScreen> {
       _cachedAvatarUrl = avatarUrl;
       _cachedUnit = unit;
       _cachedLanguage = language;
+      // No separate local cache field for turn mode in this screen
     });
   }
 
@@ -246,6 +274,7 @@ class _StartupScreenState extends State<StartupScreen> {
     await sp.remove('saved_avatar_url');
     await sp.remove('saved_unit');
     await sp.remove('saved_language');
+    await sp.remove('saved_turn_mode');
     setState(() {
       _cachedEmail = null;
       _cachedNickname = null;
@@ -303,6 +332,7 @@ class _StartupScreenState extends State<StartupScreen> {
           fullUrl,
           provider.unit,
           provider.languageCode,
+          turnMode: provider.turnMode,
           avatarLocalPath: _cachedAvatarFile?.path,
         );
         setState(() => _avatarKey = UniqueKey());
@@ -388,6 +418,7 @@ class _StartupScreenState extends State<StartupScreen> {
           fullUrl,
           provider.unit,
           provider.languageCode,
+          turnMode: provider.turnMode,
           avatarLocalPath: _cachedAvatarFile?.path,
         );
         setState(() => _avatarKey = UniqueKey());
@@ -418,11 +449,19 @@ class _StartupScreenState extends State<StartupScreen> {
   }) async {
     final provider = context.read<SettingsProvider>();
     await _saveProfileAndPrefs(
-      email, password, nickname, avatarUrl, provider.unit, provider.languageCode,
+      email,
+      password,
+      nickname,
+      avatarUrl,
+      provider.unit,
+      provider.languageCode,
+      turnMode: provider.turnMode,
       avatarLocalPath: avatarLocalPath,
     );
     await ApiService.selectUnit(provider.unit);
     await ApiService.selectLanguage(provider.languageCode);
+    await ApiService.selectTurnMode(provider.turnMode);
+    await ApiService.setAnnounceLocation(provider.announceCurrentLocation);
     await provider.setLoggedIn(true);
     if (context.mounted) {
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectScreen()));
@@ -507,7 +546,7 @@ class _StartupScreenState extends State<StartupScreen> {
       _avatarKey = UniqueKey();
     });
 
-    // 上传
+    // Upload avatar
     final email = provider.email;
     if (email.isNotEmpty) {
       final bytes = await localAvatarFile.readAsBytes();
@@ -516,7 +555,7 @@ class _StartupScreenState extends State<StartupScreen> {
       if (url != null && (url as String).isNotEmpty) {
         final resolved = ServerAddressService.resolve(url);
         await provider.saveAvatarUrl(resolved);
-        // 缓存破坏
+        // Bust cache
         final withTs = '$resolved?t=${DateTime.now().millisecondsSinceEpoch}';
         await _downloadAndSaveAvatar(withTs);
         await _onAuthSuccess(
@@ -617,9 +656,7 @@ class _StartupScreenState extends State<StartupScreen> {
         const SizedBox(width: 8),
         OutlinedButton(
           onPressed: () async {
-            provider.setUnit('feet');
-            final sp = await SharedPreferences.getInstance();
-            await sp.setString('saved_unit', 'feet');
+            await provider.setUnit('feet');
           },
           style: OutlinedButton.styleFrom(
             backgroundColor: provider.unit == "feet" ? Colors.blueAccent : Colors.transparent,
@@ -635,9 +672,7 @@ class _StartupScreenState extends State<StartupScreen> {
         const SizedBox(width: 8),
         OutlinedButton(
           onPressed: () async {
-            provider.setUnit('meter');
-            final sp = await SharedPreferences.getInstance();
-            await sp.setString('saved_unit', 'meter');
+            await provider.setUnit('meter');
           },
           style: OutlinedButton.styleFrom(
             backgroundColor: provider.unit == "meter" ? Colors.blueAccent : Colors.transparent,
@@ -670,11 +705,67 @@ class _StartupScreenState extends State<StartupScreen> {
               .toList(),
           onChanged: (String? value) async {
             if (value != null) {
-              provider.setLanguage(value);
-              final sp = await SharedPreferences.getInstance();
-              await sp.setString('saved_language', value);
+              await provider.setLanguage(value);
             }
           },
+        ),
+      ],
+    );
+  }
+
+  Widget _turnModeSelector() {
+    final provider = context.watch<SettingsProvider>();
+    return Row(
+      children: [
+        const Text("Turn Mode:", style: TextStyle(fontSize: 18)),
+        const SizedBox(width: 8),
+        ..._turnModes.map((m) {
+          final code = m['code']!;
+          final name = m['name']!;
+          final isSelected = provider.turnMode == code;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: OutlinedButton(
+              onPressed: () async {
+                await provider.setTurnMode(code);
+              },
+              style: OutlinedButton.styleFrom(
+                backgroundColor: isSelected ? Colors.blueAccent : Colors.transparent,
+              ),
+              child: Text(
+                name,
+                style: TextStyle(
+                  color: isSelected ? Colors.white : Colors.black87,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _announceLocationToggle() {
+    final provider = context.watch<SettingsProvider>();
+    return Row(
+      children: [
+        const Text("Announce Location:", style: TextStyle(fontSize: 18)),
+        const SizedBox(width: 8),
+        Switch(
+          value: provider.announceCurrentLocation,
+          onChanged: (bool value) async {
+            await provider.setAnnounceCurrentLocation(value);
+          },
+          activeColor: Colors.blueAccent,
+        ),
+        Text(
+          provider.announceCurrentLocation ? "ON" : "OFF",
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: provider.announceCurrentLocation ? Colors.blueAccent : Colors.grey,
+          ),
         ),
       ],
     );
@@ -687,7 +778,7 @@ class _StartupScreenState extends State<StartupScreen> {
       children: [
         const Text("Welcome to UNav", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
         const SizedBox(height: 16),
-        // 服务器选择 + 可编辑地址
+        // Server selector + editable address
         ServerSelector(onChanged: (_) {}),
         const SizedBox(height: 16),
 
@@ -714,6 +805,10 @@ class _StartupScreenState extends State<StartupScreen> {
         _unitSelector(),
         const SizedBox(height: 12),
         _languageSelector(),
+        const SizedBox(height: 12),
+        _turnModeSelector(),
+        const SizedBox(height: 12),
+        _announceLocationToggle(),
         const SizedBox(height: 12),
         if (_errorMsg != null)
           Padding(
@@ -818,6 +913,10 @@ class _StartupScreenState extends State<StartupScreen> {
         const SizedBox(height: 12),
         _languageSelector(),
         const SizedBox(height: 12),
+        _turnModeSelector(),
+        const SizedBox(height: 12),
+        _announceLocationToggle(),
+        const SizedBox(height: 12),
         if (_errorMsg != null)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8.0),
@@ -841,8 +940,8 @@ class _StartupScreenState extends State<StartupScreen> {
         ? sp.avatarUrl!
         : (_cachedAvatarUrl ?? "");
 
-    // 已登录且不在注册/强制登录模式：展示用户卡片 & 快速进入应用
-    if ((sp.isLoggedIn ?? false) && !_registerMode && !_showFullLogin) {
+    // If logged in and not in register/full-login mode: show quick entry
+    if ((sp.isLoggedIn) && !_registerMode && !_showFullLogin) {
       return Scaffold(
         appBar: AppBar(
           title: const Text('UNav'),
@@ -902,7 +1001,7 @@ class _StartupScreenState extends State<StartupScreen> {
       );
     }
 
-    // 登录 / 注册页
+    // Login / Register page
     return Scaffold(
       appBar: AppBar(
         title: const Text('UNav'),

@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Provides accessors and persistent setters for:
 /// - App language (code)
 /// - Navigation unit (feet/meter)
+/// - Turn mode (default/deg15)
 /// - User profile: email, nickname, avatar (local file and server URL)
 /// - Login state
 /// All mutations are reflected both in memory and in SharedPreferences,
@@ -16,6 +17,9 @@ class SettingsProvider extends ChangeNotifier {
   // --- User settings ---
   String _languageCode = 'en';       // App language code: 'en', 'zh', 'th'
   String _unit = 'feet';             // Navigation unit: 'feet' or 'meter'
+  String _turnMode = 'default';      // Turn mode: 'default' or 'deg15'
+  bool _announceCurrentLocation = false;
+
   String? _email;                    // User email (login identifier)
   String? _nickname;                 // User nickname/display name
   File? _avatarFile;                 // Local avatar file (cropped and stored on device)
@@ -25,6 +29,9 @@ class SettingsProvider extends ChangeNotifier {
   // --- Getters (read-only to outside) ---
   String get languageCode => _languageCode;
   String get unit => _unit;
+  String get turnMode => _turnMode;
+  bool get announceCurrentLocation => _announceCurrentLocation;
+
   String get email => _email ?? '';
   String get nickname => _nickname ?? '';
   File? get avatarFile => _avatarFile;
@@ -42,6 +49,17 @@ class SettingsProvider extends ChangeNotifier {
     }
   }
 
+  // --- 播报当前位置设置 (persistent) ---
+  /// 设置是否播报当前位置，持久化到存储，并通知监听者
+  Future<void> setAnnounceCurrentLocation(bool announce) async {
+    if (announce != _announceCurrentLocation) {
+      _announceCurrentLocation = announce;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('saved_announce_location', announce);
+      notifyListeners();
+    }
+  }
+
   // --- Unit selection (persistent) ---
   /// Sets navigation distance unit, persists to storage, and notifies listeners.
   Future<void> setUnit(String unit) async {
@@ -53,10 +71,27 @@ class SettingsProvider extends ChangeNotifier {
     }
   }
 
-  /// Sets both language and unit, persists both if changed, and notifies listeners if needed.
-  Future<void> setAll({required String language, required String unit}) async {
+  // --- Turn mode selection (persistent) ---
+  /// Sets turn mode ('default' | 'deg15'), persists to storage, and notifies listeners.
+  Future<void> setTurnMode(String mode) async {
+    if (mode != _turnMode) {
+      _turnMode = mode;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('saved_turn_mode', mode);
+      notifyListeners();
+    }
+  }
+
+  /// Sets language, unit, and optionally turn mode, persists any changed values, then notifies.
+  Future<void> setAll({
+    required String language,
+    required String unit,
+    String? turnMode,
+    bool? announceCurrentLocation,
+  }) async {
     bool changed = false;
     final prefs = await SharedPreferences.getInstance();
+
     if (language != _languageCode) {
       _languageCode = language;
       await prefs.setString('saved_language', language);
@@ -65,6 +100,16 @@ class SettingsProvider extends ChangeNotifier {
     if (unit != _unit) {
       _unit = unit;
       await prefs.setString('saved_unit', unit);
+      changed = true;
+    }
+    if (turnMode != null && turnMode != _turnMode) {
+      _turnMode = turnMode;
+      await prefs.setString('saved_turn_mode', turnMode);
+      changed = true;
+    }
+    if (announceCurrentLocation != null && announceCurrentLocation != _announceCurrentLocation) { 
+      _announceCurrentLocation = announceCurrentLocation;
+      await prefs.setBool('saved_announce_location', announceCurrentLocation);
       changed = true;
     }
     if (changed) notifyListeners();
@@ -137,8 +182,12 @@ class SettingsProvider extends ChangeNotifier {
     _email = prefs.getString('user_email');
     _nickname = prefs.getString('user_nickname');
     _isLoggedIn = prefs.getBool('is_logged_in') ?? false;
+
     _languageCode = prefs.getString('saved_language') ?? 'en';
     _unit = prefs.getString('saved_unit') ?? 'feet';
+    _turnMode = prefs.getString('saved_turn_mode') ?? 'default';
+    _announceCurrentLocation = prefs.getBool('saved_announce_location') ?? false;
+
     await loadAvatar();
     notifyListeners();
   }
@@ -185,12 +234,19 @@ class SettingsProvider extends ChangeNotifier {
     await prefs.remove('is_logged_in');
     await prefs.remove('saved_unit');
     await prefs.remove('saved_language');
+    await prefs.remove('saved_turn_mode');
+    await prefs.remove('saved_announce_location');
     await clearAvatar();
+
     _email = null;
     _nickname = null;
     _isLoggedIn = false;
+
     _languageCode = 'en';
     _unit = 'feet';
+    _turnMode = 'default';
+    _announceCurrentLocation = false;
+
     notifyListeners();
   }
 }

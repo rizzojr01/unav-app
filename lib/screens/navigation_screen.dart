@@ -67,6 +67,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
   // ---- UI mode ----
   bool _firstPerson = false;
 
+  // ---- TTS play mode ----
+  // false: speak only the "current step group"
+  // true : speak all cmds (full route playback)
+  bool _playFullCommands = false;
+
   // ---- Low-latency UI sound (audioplayers) ----
   late final AudioPlayer _playerSend;
 
@@ -76,7 +81,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     WidgetsBinding.instance.addObserver(this);
 
     _configureAudioForUiSounds(); // set audio context
-    _initUiSoundPlayer();         // prepare player + preload asset
+    _initUiSoundPlayer(); // prepare player + preload asset
 
     _fetchFloorplan();
     _initCamera();
@@ -159,7 +164,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         setState(() => _isCameraInitialized = false);
         return;
       }
-      final controller = CameraController(cameras[0], ResolutionPreset.high, enableAudio: false);
+      final controller = CameraController(
+        cameras[0],
+        ResolutionPreset.high,
+        enableAudio: false,
+      );
       await controller.initialize();
       if (!mounted) return;
       setState(() {
@@ -251,10 +260,9 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     List<Map<String, dynamic>> cmds =
         cmdsRaw.whereType<Map<String, dynamic>>().cast<Map<String, dynamic>>().toList();
 
-    // 根据 announceCurrentLocation 设置过滤命令
+    // Filter commands based on announceCurrentLocation setting
     final provider = context.read<SettingsProvider>();
     if (!provider.announceCurrentLocation) {
-      // 过滤掉 "start_in" 命令（播报当前位置信息）
       cmds = cmds.where((cmd) {
         final tag = cmd['tag'] as String?;
         return tag != 'start_in';
@@ -265,10 +273,21 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       final lang = provider.languageCode;
       await TTSService.setLanguage(lang);
 
-      final group = _extractCurrentCommandGroup(cmds);
-      final groupTexts =
-          group.map((cmd) => cmd['text'] as String? ?? '').where((t) => t.isNotEmpty).toList();
-      TTSService.speakSequentially(groupTexts);
+      // Choose playback mode:
+      // - Step-by-step: current command group
+      // - Full: all commands
+      final List<Map<String, dynamic>> toSpeakCmds =
+          _playFullCommands ? cmds : _extractCurrentCommandGroup(cmds);
+
+      final texts = toSpeakCmds
+          .map((cmd) => cmd['text'] as String? ?? '')
+          .where((t) => t.isNotEmpty)
+          .toList();
+
+      if (texts.isNotEmpty) {
+        // Note: This is intentionally not awaited; it depends on TTSService internal queueing.
+        TTSService.speakSequentially(texts);
+      }
     }
 
     final mapKey = (result['best_map_key'] as List).take(3).join('|');
@@ -276,6 +295,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       await _fetchFloorplan();
       _lastMapKey = mapKey;
     }
+
     setState(() {
       _navResultData = result;
       _currentPath = floorSegs[_lastMapKey!] ?? [];
@@ -306,6 +326,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     bool foundForward = false;
     int i = 0;
 
+    // 1) Add commands until the first forward (inclusive)
     for (; i < cmds.length; ++i) {
       result.add(cmds[i]);
       if (_isForwardTag(cmds[i]['tag'])) {
@@ -314,8 +335,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         break;
       }
     }
+
+    // If no forward found, return what we collected (could be all cmds)
     if (!foundForward) return result;
 
+    // 2) After forward, include extra hints until the next turn/forward appears
     for (; i < cmds.length; ++i) {
       final tag = cmds[i]['tag'] as String? ?? '';
       if (_isTurnTag(tag) || _isForwardTag(tag)) break;
@@ -326,6 +350,23 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
 
   bool _isForwardTag(String? tag) => tag == 'forward' || tag == 'forward_door';
   bool _isTurnTag(String? tag) => tag == 'turn' || tag == 'u_turn';
+
+  Future<void> _announcePlaybackMode() async {
+    final lang = context.read<SettingsProvider>().languageCode;
+    final msg = _playFullCommands
+        ? (lang == 'zh'
+            ? '已切换为全程播报'
+            : lang == 'th'
+                ? 'สลับเป็นการบอกเส้นทางทั้งหมด'
+                : 'Switched to full instructions')
+        : (lang == 'zh'
+            ? '已切换为分步播报'
+            : lang == 'th'
+                ? 'สลับเป็นการบอกทีละขั้น'
+                : 'Switched to step-by-step instructions');
+    await TTSService.setLanguage(lang);
+    await TTSService.speak(msg);
+  }
 
   // ========================= UI Building =========================
 
@@ -361,6 +402,21 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
           child: CameraPreview(_cameraController!),
         ),
       ),
+    );
+  }
+
+  Widget _buildPlaybackToggleButton() {
+    return IconButton(
+      icon: Icon(
+        _playFullCommands ? Icons.playlist_play : Icons.navigation,
+        size: 32,
+        color: Colors.white,
+      ),
+      tooltip: _playFullCommands ? 'Full playback' : 'Step playback',
+      onPressed: () async {
+        setState(() => _playFullCommands = !_playFullCommands);
+        await _announcePlaybackMode();
+      },
     );
   }
 
@@ -435,6 +491,17 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
                   child: IconButton(
                     icon: const Icon(Icons.arrow_back, size: 32, color: Colors.white),
                     onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
+              ),
+
+              // Playback mode toggle button (top-right)
+              SafeArea(
+                child: Align(
+                  alignment: Alignment.topRight,
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: _buildPlaybackToggleButton(),
                   ),
                 ),
               ),

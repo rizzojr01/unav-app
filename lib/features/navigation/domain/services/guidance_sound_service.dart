@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/services.dart';
@@ -374,17 +375,20 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     required double relativeAngleDeg,
     required AudioCueDirection direction,
   }) {
-    final clampedAngle = relativeAngleDeg.clamp(-75.0, 75.0);
-    final normalized = clampedAngle / 75.0;
-    final panFromAngle = normalized * 0.72;
+    final normalizedDeg = (((relativeAngleDeg + 180) % 360) - 180).toDouble();
+    final theta = normalizedDeg * math.pi / 180.0;
+    final signedPan = math.sin(theta);
+    final lateralStrength = signedPan.abs();
+    final eased = lateralStrength * lateralStrength * (3 - (2 * lateralStrength));
+    final panFromAngle = signedPan * _lerpDouble(0.04, 0.52, eased);
 
-    if (panFromAngle.abs() > 0.02) {
-      return panFromAngle.clamp(-0.92, 0.92);
+    if (panFromAngle.abs() > 0.01) {
+      return panFromAngle.clamp(-0.52, 0.52);
     }
 
     return switch (direction) {
-      AudioCueDirection.left => -0.48,
-      AudioCueDirection.right => 0.48,
+      AudioCueDirection.left => -0.10,
+      AudioCueDirection.right => 0.10,
       AudioCueDirection.center => 0.0,
     };
   }
@@ -394,7 +398,11 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     required AudioCueDirection direction,
   }) {
     final useChime = headingErrorDeg < 55;
+    final normalizedDeg = (((_guidanceRelativeAngleDeg + 180) % 360) - 180).toDouble();
+    final lateralStrength = math.sin(normalizedDeg * math.pi / 180.0).abs();
+    final isNearCenter = lateralStrength <= 0.22;
     if (useChime) {
+      if (isNearCenter) return _offRouteChimeCenterAsset;
       return switch (direction) {
         AudioCueDirection.left => _offRouteChimeLeftAsset,
         AudioCueDirection.right => _offRouteChimeRightAsset,
@@ -402,6 +410,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
       };
     }
 
+    if (isNearCenter) return _offRouteDrumCenterAsset;
     return switch (direction) {
       AudioCueDirection.left => _offRouteDrumLeftAsset,
       AudioCueDirection.right => _offRouteDrumRightAsset,

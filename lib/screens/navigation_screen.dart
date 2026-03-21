@@ -25,7 +25,14 @@ import '../services/tts_service.dart';
 import '../providers/settings_provider.dart';
 
 const Map<String, List<String>> turnKeywords = {
-  'en': ['turn', 'slight left', 'slight right', 'sharp right', 'sharp left', 'u-turn'],
+  'en': [
+    'turn',
+    'slight left',
+    'slight right',
+    'sharp right',
+    'sharp left',
+    'u-turn',
+  ],
   'zh': ['转弯', '掉头'],
   'th': ['เลี้ยว', 'กลับรถ'],
 };
@@ -62,7 +69,8 @@ class NavigationScreen extends StatefulWidget {
   State<NavigationScreen> createState() => _NavigationScreenState();
 }
 
-class _NavigationScreenState extends State<NavigationScreen> with WidgetsBindingObserver {
+class _NavigationScreenState extends State<NavigationScreen>
+    with WidgetsBindingObserver {
   static const double _headingLockThresholdDeg = 3.0;
   static const double _spatialCueDistanceMeters = 2.0;
   static const bool _enableSpatialAudioExperiment = false;
@@ -85,7 +93,9 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
 
   // ---- Camera state ----
   CameraController? _cameraController;
-  final MethodChannel _arMethodChannel = const MethodChannel(ArChannelContract.methodChannel);
+  final MethodChannel _arMethodChannel = const MethodChannel(
+    ArChannelContract.methodChannel,
+  );
   bool _isCameraInitialized = false;
   bool _isLoading = false;
   bool _isRebuildingCamera = false;
@@ -103,7 +113,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
   late final AudioPlayer _playerSend;
 
   bool get _usesNativeArPreview =>
-      Platform.isIOS && _poseProviderBundle.mode == PoseProviderMode.nativeAr;
+      (Platform.isIOS || Platform.isAndroid) &&
+      _poseProviderBundle.mode == PoseProviderMode.nativeAr;
+
+  String get _nativeArBackendName =>
+      Platform.isAndroid ? 'androidArCore' : 'iosArKit';
 
   @override
   void initState() {
@@ -154,7 +168,8 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       }
       return;
     }
-    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
+    if (_cameraController == null || !_cameraController!.value.isInitialized)
+      return;
     if (state == AppLifecycleState.inactive) {
       _cameraController?.dispose();
     } else if (state == AppLifecycleState.resumed) {
@@ -190,23 +205,25 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
   /// Configure audio context for short UI sounds (Android/iOS)
   Future<void> _configureAudioForUiSounds() async {
     try {
-      await AudioPlayer.global.setAudioContext(const AudioContext(
-        android: AudioContextAndroid(
-          contentType: AndroidContentType.sonification,
-          usageType: AndroidUsageType.assistanceSonification,
-          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
-          isSpeakerphoneOn: true,
-          stayAwake: false,
+      await AudioPlayer.global.setAudioContext(
+        const AudioContext(
+          android: AudioContextAndroid(
+            contentType: AndroidContentType.sonification,
+            usageType: AndroidUsageType.assistanceSonification,
+            audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+            isSpeakerphoneOn: true,
+            stayAwake: false,
+          ),
+          iOS: AudioContextIOS(
+            category: AVAudioSessionCategory.playback,
+            options: [
+              AVAudioSessionOptions.mixWithOthers,
+              AVAudioSessionOptions.allowBluetooth,
+              AVAudioSessionOptions.defaultToSpeaker,
+            ],
+          ),
         ),
-        iOS: AudioContextIOS(
-          category: AVAudioSessionCategory.playback,
-          options: [
-            AVAudioSessionOptions.mixWithOthers,
-            AVAudioSessionOptions.allowBluetooth,
-            AVAudioSessionOptions.defaultToSpeaker,
-          ],
-        ),
-      ));
+      );
     } catch (_) {}
   }
 
@@ -295,9 +312,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     try {
       await _arMethodChannel.invokeMethod<void>(
         ArChannelContract.startSessionMethod,
-        {
-          ArChannelContract.backendKey: 'iosArKit',
-        },
+        {ArChannelContract.backendKey: _nativeArBackendName},
       );
     } catch (_) {}
   }
@@ -307,9 +322,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       await _ensureArPreviewSessionStarted();
       final bytes = await _arMethodChannel.invokeMethod<Uint8List>(
         ArChannelContract.captureCurrentFrameMethod,
-        {
-          ArChannelContract.backendKey: 'iosArKit',
-        },
+        {ArChannelContract.backendKey: _nativeArBackendName},
       );
       if (bytes == null || bytes.isEmpty) return null;
       return fixImageOrientation(bytes);
@@ -343,14 +356,18 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
 
   Future<void> _captureAndSend() async {
     if (_isLoading) return;
-    if (!_usesNativeArPreview && (!_isCameraInitialized || _cameraController == null)) return;
+    if (!_usesNativeArPreview &&
+        (!_isCameraInitialized || _cameraController == null))
+      return;
     setState(() => _isLoading = true);
 
     // 1) Play cue first
     await _playSendCue();
 
     // 2) Delay a bit to avoid focus race with camera shutter
-    await Future.delayed(const Duration(milliseconds: 150)); // 150ms for extra safety
+    await Future.delayed(
+      const Duration(milliseconds: 150),
+    ); // 150ms for extra safety
 
     try {
       final fixedBytes = await _capturePreviewFrameBytes();
@@ -433,7 +450,9 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       final referencePose = processingResult.session.currentPose;
       final floorScale = await ApiService.getCurrentFloorScale();
       if (referencePose != null && floorScale != null) {
-        final metersPerPixel = provider.unit == 'feet' ? floorScale * 0.3048 : floorScale;
+        final metersPerPixel = provider.unit == 'feet'
+            ? floorScale * 0.3048
+            : floorScale;
         _navigationController.configureArTrackingAlignment(
           referenceFloorplanPose: referencePose,
           metersPerPixel: metersPerPixel,
@@ -442,14 +461,16 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       final mockRouteProvider = _poseProviderBundle.mockRouteProvider;
       mockRouteProvider?.loadRoute(route);
       try {
-        await _navigationController.startPoseTracking(_handleTrackingSessionUpdated);
+        await _navigationController.startPoseTracking(
+          _handleTrackingSessionUpdated,
+        );
       } catch (_) {
         await _handleError(
           provider.languageCode == 'zh'
               ? 'AR 跟踪当前不可用，请检查设备是否支持。'
               : provider.languageCode == 'th'
-                  ? 'การติดตาม AR ยังไม่พร้อมใช้งานบนอุปกรณ์นี้'
-                  : 'AR tracking is unavailable on this device.',
+              ? 'การติดตาม AR ยังไม่พร้อมใช้งานบนอุปกรณ์นี้'
+              : 'AR tracking is unavailable on this device.',
         );
       }
     }
@@ -488,7 +509,9 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     _lastSpokenTrackingMessage = msg;
     _speechDebounceTimer?.cancel();
     _speechDebounceTimer = Timer(const Duration(milliseconds: 50), () async {
-      await TTSService.setLanguage(context.read<SettingsProvider>().languageCode);
+      await TTSService.setLanguage(
+        context.read<SettingsProvider>().languageCode,
+      );
       await TTSService.speak(msg);
     });
   }
@@ -501,7 +524,8 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     _emitHeadingLatchHapticIfNeeded(headingAligned);
 
     final isDirectionalGuidanceActive =
-        session.trackingState == TrackingState.offRoute || headingErrorDeg > _headingLockThresholdDeg;
+        session.trackingState == TrackingState.offRoute ||
+        headingErrorDeg > _headingLockThresholdDeg;
     final guidanceSeverity = session.trackingState == TrackingState.offRoute
         ? session.offRouteSeverity.clamp(0.35, 1.0)
         : _normalizedHeadingSeverity(headingErrorDeg);
@@ -577,9 +601,12 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     return diff > 180 ? 360 - diff : diff;
   }
 
-  AudioCueDirection _headingCueDirectionToNextWaypoint(NavigationSession session) {
+  AudioCueDirection _headingCueDirectionToNextWaypoint(
+    NavigationSession session,
+  ) {
     final signed = _signedHeadingDeltaToNextWaypoint(session);
-    if (signed.abs() <= _headingLockThresholdDeg) return AudioCueDirection.center;
+    if (signed.abs() <= _headingLockThresholdDeg)
+      return AudioCueDirection.center;
     return signed > 0 ? AudioCueDirection.left : AudioCueDirection.right;
   }
 
@@ -631,9 +658,9 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     await TTSService.setLanguage(lang);
     await TTSService.speak(msg);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
     }
   }
 
@@ -643,8 +670,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     try {
       final snapshot = _navigationController.buildArOverlaySnapshot();
       if (snapshot == null ||
-          (snapshot.activePathWorldPoints.isEmpty && snapshot.futurePathWorldPoints.isEmpty)) {
-        await _arMethodChannel.invokeMethod<void>(ArChannelContract.clearOverlayMethod);
+          (snapshot.activePathWorldPoints.isEmpty &&
+              snapshot.futurePathWorldPoints.isEmpty)) {
+        await _arMethodChannel.invokeMethod<void>(
+          ArChannelContract.clearOverlayMethod,
+        );
         return;
       }
 
@@ -661,21 +691,29 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         ArChannelContract.updateOverlayMethod,
         {
           ArChannelContract.activePathPointsKey: snapshot.activePathWorldPoints
-              .map((point) => <String, double>{
-                    ArChannelContract.xKey: point.x,
-                    ArChannelContract.yKey: snapshot.worldY,
-                    ArChannelContract.zKey: point.y,
-                  })
+              .map(
+                (point) => <String, double>{
+                  ArChannelContract.xKey: point.x,
+                  ArChannelContract.yKey: snapshot.worldY,
+                  ArChannelContract.zKey: point.y,
+                },
+              )
               .toList(growable: false),
           ArChannelContract.futurePathPointsKey: snapshot.futurePathWorldPoints
-              .map((point) => <String, double>{
-                    ArChannelContract.xKey: point.x,
-                    ArChannelContract.yKey: snapshot.worldY,
-                    ArChannelContract.zKey: point.y,
-                  })
+              .map(
+                (point) => <String, double>{
+                  ArChannelContract.xKey: point.x,
+                  ArChannelContract.yKey: snapshot.worldY,
+                  ArChannelContract.zKey: point.y,
+                },
+              )
               .toList(growable: false),
-          ArChannelContract.nextWaypointKey: encodePoint(snapshot.nextWaypointWorldPoint),
-          ArChannelContract.destinationKey: encodePoint(snapshot.destinationWorldPoint),
+          ArChannelContract.nextWaypointKey: encodePoint(
+            snapshot.nextWaypointWorldPoint,
+          ),
+          ArChannelContract.destinationKey: encodePoint(
+            snapshot.destinationWorldPoint,
+          ),
         },
       );
     } catch (_) {}
@@ -702,10 +740,15 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         child: SizedBox(
           width: width,
           height: height,
-          child: const UiKitView(
-            viewType: ArChannelContract.previewViewType,
-            layoutDirection: TextDirection.ltr,
-          ),
+          child: Platform.isIOS
+              ? const UiKitView(
+                  viewType: ArChannelContract.previewViewType,
+                  layoutDirection: TextDirection.ltr,
+                )
+              : const AndroidView(
+                  viewType: ArChannelContract.previewViewType,
+                  layoutDirection: TextDirection.ltr,
+                ),
         ),
       );
     }
@@ -717,7 +760,9 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
           color: Colors.black38,
           width: orientation == Orientation.portrait ? 120 : 180,
           height: orientation == Orientation.portrait ? 180 : 120,
-          child: const Center(child: Icon(Icons.videocam_off, color: Colors.white)),
+          child: const Center(
+            child: Icon(Icons.videocam_off, color: Colors.white),
+          ),
         ),
       );
     }
@@ -774,9 +819,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         backgroundColor: Colors.black.withValues(alpha: 0.78),
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
     );
   }
@@ -789,13 +832,18 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     Color foreground = Colors.white;
 
     if (_audioOutputStatus.isMonoAudioEnabled) {
-      message = 'Mono Audio is on. Turn it off in Accessibility > Audio & Visual for spatial cues.';
+      message =
+          'Mono Audio is on. Turn it off in Accessibility > Audio & Visual for spatial cues.';
       background = Colors.orange.withValues(alpha: 0.92);
       foreground = Colors.black;
-    } else if (_enableSpatialAudioExperiment && !_audioOutputStatus.hasHeadphonesConnected) {
-      message = 'Spatial cues work best with headphones or AirPods. Current output is using stereo fallback.';
-    } else if (_enableSpatialAudioExperiment && _audioOutputStatus.supportsSpatial) {
-      message = 'Spatial guidance active: cues are placed toward the next waypoint.';
+    } else if (_enableSpatialAudioExperiment &&
+        !_audioOutputStatus.hasHeadphonesConnected) {
+      message =
+          'Spatial cues work best with headphones or AirPods. Current output is using stereo fallback.';
+    } else if (_enableSpatialAudioExperiment &&
+        _audioOutputStatus.supportsSpatial) {
+      message =
+          'Spatial guidance active: cues are placed toward the next waypoint.';
       background = Colors.teal.withValues(alpha: 0.86);
     }
 
@@ -846,13 +894,17 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
                       )
                     else
                       Container(color: Colors.grey[200]),
-                    if (_currentPath.isNotEmpty && _decodedFloorplanImage != null)
+                    if (_currentPath.isNotEmpty &&
+                        _decodedFloorplanImage != null)
                       CustomPaint(
                         size: Size(canvasW, canvasH),
                         painter: FloorplanPathPainter(
                           pathPoints: _currentPath,
                           floorplanImage: _decodedFloorplanImage,
-                          headingAngleDeg: _navigationController.session.currentPose?.heading,
+                          headingAngleDeg: _navigationController
+                              .session
+                              .currentPose
+                              ?.heading,
                           firstPersonView: _firstPerson,
                         ),
                       ),
@@ -880,24 +932,39 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       GestureDetector(
-                        onTap: () => setState(() => _firstPerson = !_firstPerson),
+                        onTap: () =>
+                            setState(() => _firstPerson = !_firstPerson),
                         child: CircleAvatar(
                           radius: 24,
                           backgroundImage:
-                              Provider.of<SettingsProvider>(context, listen: false).avatarUrl != null
-                                  ? NetworkImage(
-                                      Provider.of<SettingsProvider>(context, listen: false).avatarUrl!)
-                                  : const AssetImage('assets/avatar_placeholder.png')
-                                      as ImageProvider,
+                              Provider.of<SettingsProvider>(
+                                    context,
+                                    listen: false,
+                                  ).avatarUrl !=
+                                  null
+                              ? NetworkImage(
+                                  Provider.of<SettingsProvider>(
+                                    context,
+                                    listen: false,
+                                  ).avatarUrl!,
+                                )
+                              : const AssetImage(
+                                      'assets/avatar_placeholder.png',
+                                    )
+                                    as ImageProvider,
                         ),
                       ),
                       const SizedBox(height: 12),
                       GuidanceBanner(
-                        trackingState: _navigationController.session.trackingState,
-                        message: _navigationController.session.latestGuidanceMessage,
-                        remainingDistancePx: _navigationController.session.remainingDistancePx,
-                        distanceToNextWaypointPx:
-                            _navigationController.session.distanceToNextWaypointPx,
+                        trackingState:
+                            _navigationController.session.trackingState,
+                        message:
+                            _navigationController.session.latestGuidanceMessage,
+                        remainingDistancePx:
+                            _navigationController.session.remainingDistancePx,
+                        distanceToNextWaypointPx: _navigationController
+                            .session
+                            .distanceToNextWaypointPx,
                       ),
                       if (_buildAudioStatusBanner() case final banner?) banner,
                     ],
@@ -912,7 +979,11 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
                 child: Align(
                   alignment: Alignment.topLeft,
                   child: IconButton(
-                    icon: const Icon(Icons.arrow_back, size: 32, color: Colors.white),
+                    icon: const Icon(
+                      Icons.arrow_back,
+                      size: 32,
+                      color: Colors.white,
+                    ),
                     onPressed: () => Navigator.of(context).pop(),
                   ),
                 ),

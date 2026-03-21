@@ -37,7 +37,7 @@ android {
 
     defaultConfig {
         applicationId = "com.ai4celab.unav_app"
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -71,6 +71,10 @@ android {
         }
     }
 
+}
+
+dependencies {
+    implementation("com.google.ar:core:1.33.0")
 }
 
 flutter {

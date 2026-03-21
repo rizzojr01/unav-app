@@ -400,13 +400,6 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
     if let nextWaypointArgs = args[ArChannelContract.nextWaypointKey] as? [String: Any],
        let nextPoint = point(from: nextWaypointArgs) {
       overlayRootNode.addChildNode(
-        buildWaypointRingNode(
-          at: nextPoint,
-          radius: 0.22,
-          color: UIColor.systemTeal
-        )
-      )
-      overlayRootNode.addChildNode(
         buildMarkerNode(
           at: nextPoint,
           radius: 0.08,

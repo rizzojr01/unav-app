@@ -78,6 +78,8 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
   late final GuidanceSoundService _guidanceSoundService;
   Timer? _speechDebounceTimer;
   String? _lastGuidanceCueSignature;
+  String? _lastSpokenTrackingMessage;
+  String? _lastSpokenTrackingEventSignature;
   bool? _lastHeadingAligned;
   AudioOutputStatus _audioOutputStatus = const AudioOutputStatus.unknown();
 
@@ -406,6 +408,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     final processingResult = _navigationController.processNavigationResult(
       rawResult: result,
       languageCode: provider.languageCode,
+      distanceUnit: provider.unit,
       announceCurrentLocation: provider.announceCurrentLocation,
       playFullCommands: _playFullCommands,
     );
@@ -423,6 +426,7 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
       _currentPath = processingResult.session.trackedPath;
     });
     _playGuidanceCueIfNeeded(processingResult.session);
+    unawaited(_syncArOverlay(processingResult.session));
 
     final route = processingResult.session.route;
     if (route != null && route.points.length > 1) {
@@ -458,13 +462,30 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
     });
 
     _playGuidanceCueIfNeeded(session);
+    unawaited(_syncArOverlay(session));
 
-    if (session.latestGuidanceEventType == GuidanceEventType.offRoute) {
+    final eventType = session.latestGuidanceEventType;
+    if (eventType == GuidanceEventType.offRoute || eventType == null) {
+      return;
+    }
+
+    final shouldSpeakForEvent =
+        eventType == GuidanceEventType.waypointAdvanced ||
+        eventType == GuidanceEventType.arrived;
+    if (!shouldSpeakForEvent) {
       return;
     }
 
     final msg = session.latestGuidanceMessage;
     if (msg == null || msg.isEmpty) return;
+    final eventSignature =
+        '${eventType.name}:${session.nextWaypointIndex}:${session.currentSegmentIndex}';
+    if (_lastSpokenTrackingEventSignature == eventSignature &&
+        _lastSpokenTrackingMessage == msg) {
+      return;
+    }
+    _lastSpokenTrackingEventSignature = eventSignature;
+    _lastSpokenTrackingMessage = msg;
     _speechDebounceTimer?.cancel();
     _speechDebounceTimer = Timer(const Duration(milliseconds: 50), () async {
       await TTSService.setLanguage(context.read<SettingsProvider>().languageCode);
@@ -614,6 +635,50 @@ class _NavigationScreenState extends State<NavigationScreen> with WidgetsBinding
         SnackBar(content: Text(msg), backgroundColor: Colors.red),
       );
     }
+  }
+
+  Future<void> _syncArOverlay(NavigationSession session) async {
+    if (!_usesNativeArPreview) return;
+
+    try {
+      final snapshot = _navigationController.buildArOverlaySnapshot();
+      if (snapshot == null ||
+          (snapshot.activePathWorldPoints.isEmpty && snapshot.futurePathWorldPoints.isEmpty)) {
+        await _arMethodChannel.invokeMethod<void>(ArChannelContract.clearOverlayMethod);
+        return;
+      }
+
+      Map<String, double>? encodePoint(math.Point<double>? point) {
+        if (point == null) return null;
+        return <String, double>{
+          ArChannelContract.xKey: point.x,
+          ArChannelContract.yKey: snapshot.worldY,
+          ArChannelContract.zKey: point.y,
+        };
+      }
+
+      await _arMethodChannel.invokeMethod<void>(
+        ArChannelContract.updateOverlayMethod,
+        {
+          ArChannelContract.activePathPointsKey: snapshot.activePathWorldPoints
+              .map((point) => <String, double>{
+                    ArChannelContract.xKey: point.x,
+                    ArChannelContract.yKey: snapshot.worldY,
+                    ArChannelContract.zKey: point.y,
+                  })
+              .toList(growable: false),
+          ArChannelContract.futurePathPointsKey: snapshot.futurePathWorldPoints
+              .map((point) => <String, double>{
+                    ArChannelContract.xKey: point.x,
+                    ArChannelContract.yKey: snapshot.worldY,
+                    ArChannelContract.zKey: point.y,
+                  })
+              .toList(growable: false),
+          ArChannelContract.nextWaypointKey: encodePoint(snapshot.nextWaypointWorldPoint),
+          ArChannelContract.destinationKey: encodePoint(snapshot.destinationWorldPoint),
+        },
+      );
+    } catch (_) {}
   }
 
   Future<void> _announcePlaybackMode() async {

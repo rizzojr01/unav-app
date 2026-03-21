@@ -11,6 +11,8 @@ private enum ArChannelContract {
   static let stopSessionMethod = "stopSession"
   static let getCapabilitiesMethod = "getCapabilities"
   static let captureCurrentFrameMethod = "captureCurrentFrame"
+  static let updateOverlayMethod = "updateOverlay"
+  static let clearOverlayMethod = "clearOverlay"
   static let backendKey = "backend"
   static let isSupportedKey = "isSupported"
   static let xKey = "x"
@@ -26,6 +28,11 @@ private enum ArChannelContract {
   static let gravityYKey = "gravityY"
   static let gravityZKey = "gravityZ"
   static let interfaceRotationDegKey = "interfaceRotationDeg"
+  static let pathPointsKey = "pathPoints"
+  static let activePathPointsKey = "activePathPoints"
+  static let futurePathPointsKey = "futurePathPoints"
+  static let nextWaypointKey = "nextWaypoint"
+  static let destinationKey = "destination"
 }
 
 private enum SpatialAudioChannelContract {
@@ -93,10 +100,13 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
   private var eventSink: FlutterEventSink?
   private var isSessionRunning = false
   private var latestFrame: ARFrame?
+  private let previewViews = NSHashTable<ARSCNView>.weakObjects()
+  private let overlayRootNode = SCNNode()
 
   override init() {
     super.init()
     session.delegate = self
+    overlayRootNode.name = "unav_overlay_root"
   }
 
   func register(with messenger: FlutterBinaryMessenger, registrar: FlutterPluginRegistrar) {
@@ -128,6 +138,12 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
         result(nil)
       case ArChannelContract.captureCurrentFrameMethod:
         self.captureCurrentFrame(result: result)
+      case ArChannelContract.updateOverlayMethod:
+        self.updateOverlay(arguments: call.arguments)
+        result(nil)
+      case ArChannelContract.clearOverlayMethod:
+        self.clearOverlay()
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -312,6 +328,257 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
       return .right
     }
   }
+
+  func attachPreviewView(_ sceneView: ARSCNView) {
+    previewViews.add(sceneView)
+    if overlayRootNode.parent == nil {
+      sceneView.scene.rootNode.addChildNode(overlayRootNode)
+    }
+  }
+
+  private func clearOverlay() {
+    overlayRootNode.childNodes.forEach { $0.removeFromParentNode() }
+  }
+
+  private func updateOverlay(arguments: Any?) {
+    guard
+      let args = arguments as? [String: Any]
+    else {
+      clearOverlay()
+      return
+    }
+
+    previewViews.allObjects.forEach { sceneView in
+      if overlayRootNode.parent !== sceneView.scene.rootNode {
+        overlayRootNode.removeFromParentNode()
+        sceneView.scene.rootNode.addChildNode(overlayRootNode)
+      }
+    }
+
+    clearOverlay()
+
+    let activePathPoints =
+      (args[ArChannelContract.activePathPointsKey] as? [[String: Any]] ?? [])
+      .compactMap { point(from: $0) }
+    let futurePathPoints =
+      (args[ArChannelContract.futurePathPointsKey] as? [[String: Any]] ?? [])
+      .compactMap { point(from: $0) }
+
+    if activePathPoints.count >= 2 {
+      for index in 0..<(activePathPoints.count - 1) {
+        let segment = buildPathSegmentNode(
+          from: activePathPoints[index],
+          to: activePathPoints[index + 1],
+          radius: 0.032,
+          color: UIColor.systemTeal,
+          opacity: 0.96
+        )
+        overlayRootNode.addChildNode(segment)
+      }
+      overlayRootNode.addChildNode(
+        buildFlowBeamNode(
+          from: activePathPoints[0],
+          to: activePathPoints[1],
+          color: UIColor.systemTeal
+        )
+      )
+    }
+
+    if futurePathPoints.count >= 2 {
+      for index in 0..<(futurePathPoints.count - 1) {
+        let segment = buildPathSegmentNode(
+          from: futurePathPoints[index],
+          to: futurePathPoints[index + 1],
+          radius: 0.018,
+          color: UIColor.systemBlue,
+          opacity: 0.42
+        )
+        overlayRootNode.addChildNode(segment)
+      }
+    }
+
+    if let nextWaypointArgs = args[ArChannelContract.nextWaypointKey] as? [String: Any],
+       let nextPoint = point(from: nextWaypointArgs) {
+      overlayRootNode.addChildNode(
+        buildWaypointRingNode(
+          at: nextPoint,
+          radius: 0.22,
+          color: UIColor.systemTeal
+        )
+      )
+      overlayRootNode.addChildNode(
+        buildMarkerNode(
+          at: nextPoint,
+          radius: 0.08,
+          color: UIColor.systemTeal
+        )
+      )
+    }
+
+    if let destinationArgs = args[ArChannelContract.destinationKey] as? [String: Any],
+       let destinationPoint = point(from: destinationArgs) {
+      overlayRootNode.addChildNode(
+        buildWaypointRingNode(
+          at: destinationPoint,
+          radius: 0.28,
+          color: UIColor.systemOrange
+        )
+      )
+      overlayRootNode.addChildNode(
+        buildMarkerNode(
+          at: destinationPoint,
+          radius: 0.11,
+          color: UIColor.systemOrange
+        )
+      )
+    }
+  }
+
+  private func point(from dictionary: [String: Any]) -> SCNVector3? {
+    guard
+      let x = (dictionary[ArChannelContract.xKey] as? NSNumber)?.floatValue,
+      let y = (dictionary[ArChannelContract.yKey] as? NSNumber)?.floatValue,
+      let z = (dictionary[ArChannelContract.zKey] as? NSNumber)?.floatValue
+    else {
+      return nil
+    }
+
+    return SCNVector3(x, y, z)
+  }
+
+  private func buildMarkerNode(
+    at point: SCNVector3,
+    radius: CGFloat,
+    color: UIColor
+  ) -> SCNNode {
+    let sphere = SCNSphere(radius: radius)
+    sphere.firstMaterial?.diffuse.contents = color
+    sphere.firstMaterial?.emission.contents = color.withAlphaComponent(0.35)
+
+    let node = SCNNode(geometry: sphere)
+    node.position = SCNVector3(point.x, point.y + Float(radius), point.z)
+    return node
+  }
+
+  private func buildWaypointRingNode(
+    at point: SCNVector3,
+    radius: CGFloat,
+    color: UIColor
+  ) -> SCNNode {
+    let ring = SCNTorus(ringRadius: radius, pipeRadius: max(0.012, radius * 0.12))
+    ring.firstMaterial?.diffuse.contents = color.withAlphaComponent(0.9)
+    ring.firstMaterial?.emission.contents = color.withAlphaComponent(0.28)
+
+    let node = SCNNode(geometry: ring)
+    node.position = SCNVector3(point.x, point.y + 0.015, point.z)
+    node.eulerAngles = SCNVector3(Float.pi / 2, 0, 0)
+    return node
+  }
+
+  private func buildFlowBeamNode(
+    from start: SCNVector3,
+    to end: SCNVector3,
+    color: UIColor
+  ) -> SCNNode {
+    let container = SCNNode()
+    let arrowCount = 3
+
+    for index in 0..<arrowCount {
+      let cone = SCNCone(topRadius: 0.0, bottomRadius: 0.045, height: 0.11)
+      cone.firstMaterial?.diffuse.contents = color.withAlphaComponent(0.95)
+      cone.firstMaterial?.emission.contents = color.withAlphaComponent(0.45)
+
+      let arrow = SCNNode(geometry: cone)
+      arrow.opacity = 0.0
+      arrow.eulerAngles = SCNVector3(Float.pi / 2, 0, 0)
+      container.addChildNode(arrow)
+
+      let delay = Double(index) * 0.28
+      let action = arrowFlowAction(
+        from: start,
+        to: end,
+        delay: delay
+      )
+      arrow.runAction(action)
+    }
+
+    return container
+  }
+
+  private func arrowFlowAction(
+    from start: SCNVector3,
+    to end: SCNVector3,
+    delay: TimeInterval
+  ) -> SCNAction {
+    let liftedStart = SCNVector3(start.x, start.y + 0.09, start.z)
+    let liftedEnd = SCNVector3(end.x, end.y + 0.09, end.z)
+    let mid = SCNVector3(
+      (liftedStart.x + liftedEnd.x) / 2.0,
+      (liftedStart.y + liftedEnd.y) / 2.0,
+      (liftedStart.z + liftedEnd.z) / 2.0
+    )
+
+    let orient = SCNAction.run { node in
+      node.position = liftedStart
+      node.look(at: liftedEnd)
+      node.eulerAngles.x += Float.pi / 2
+    }
+    let fadeIn = SCNAction.fadeOpacity(to: 0.95, duration: 0.12)
+    let moveToMid = SCNAction.move(to: mid, duration: 0.42)
+    let moveToEnd = SCNAction.move(to: liftedEnd, duration: 0.42)
+    let fadeOut = SCNAction.fadeOut(duration: 0.16)
+    let reset = SCNAction.run { node in
+      node.opacity = 0.0
+      node.position = liftedStart
+    }
+    let sequence = SCNAction.sequence([
+      .wait(duration: delay),
+      orient,
+      .group([fadeIn, moveToMid]),
+      .group([moveToEnd, fadeOut]),
+      .wait(duration: 0.12),
+      reset,
+    ])
+
+    return .repeatForever(sequence)
+  }
+
+  private func buildPathSegmentNode(
+    from start: SCNVector3,
+    to end: SCNVector3,
+    radius: CGFloat,
+    color: UIColor,
+    opacity: CGFloat
+  ) -> SCNNode {
+    let liftedStart = SCNVector3(start.x, start.y + 0.03, start.z)
+    let liftedEnd = SCNVector3(end.x, end.y + 0.03, end.z)
+    let dx = liftedEnd.x - liftedStart.x
+    let dy = liftedEnd.y - liftedStart.y
+    let dz = liftedEnd.z - liftedStart.z
+    let length = sqrt((dx * dx) + (dy * dy) + (dz * dz))
+    let cylinder = SCNCylinder(radius: radius, height: CGFloat(length))
+    cylinder.firstMaterial?.diffuse.contents = color.withAlphaComponent(opacity)
+    cylinder.firstMaterial?.emission.contents = color.withAlphaComponent(opacity * 0.25)
+
+    let node = SCNNode(geometry: cylinder)
+    node.position = SCNVector3(
+      (liftedStart.x + liftedEnd.x) / 2.0,
+      (liftedStart.y + liftedEnd.y) / 2.0,
+      (liftedStart.z + liftedEnd.z) / 2.0
+    )
+    node.eulerAngles = eulerAnglesForCylinder(from: liftedStart, to: liftedEnd)
+    return node
+  }
+
+  private func eulerAnglesForCylinder(from start: SCNVector3, to end: SCNVector3) -> SCNVector3 {
+    let dx = end.x - start.x
+    let dy = end.y - start.y
+    let dz = end.z - start.z
+    let horizontal = sqrt((dx * dx) + (dz * dz))
+    let pitch = Float.pi / 2 - atan2(dy, horizontal)
+    let yaw = atan2(dx, dz)
+    return SCNVector3(pitch, yaw, 0)
+  }
 }
 
 private final class IOSArPreviewFactory: NSObject, FlutterPlatformViewFactory {
@@ -343,6 +610,7 @@ private final class IOSArPreviewPlatformView: NSObject, FlutterPlatformView {
     sceneView.backgroundColor = .black
     sceneView.scene = SCNScene()
     sceneView.session = bridge.session
+    bridge.attachPreviewView(sceneView)
   }
 
   func view() -> UIView {

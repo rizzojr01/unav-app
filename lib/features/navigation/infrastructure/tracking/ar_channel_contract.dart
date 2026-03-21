@@ -6,6 +6,8 @@ class ArChannelContract {
   static const String stopSessionMethod = 'stopSession';
   static const String getCapabilitiesMethod = 'getCapabilities';
   static const String captureCurrentFrameMethod = 'captureCurrentFrame';
+  static const String updateOverlayMethod = 'updateOverlay';
+  static const String clearOverlayMethod = 'clearOverlay';
   static const String previewViewType = 'unav/tracking/ar_preview_view';
 
   static const String backendKey = 'backend';
@@ -23,4 +25,9 @@ class ArChannelContract {
   static const String gravityYKey = 'gravityY';
   static const String gravityZKey = 'gravityZ';
   static const String interfaceRotationDegKey = 'interfaceRotationDeg';
+  static const String pathPointsKey = 'pathPoints';
+  static const String activePathPointsKey = 'activePathPoints';
+  static const String futurePathPointsKey = 'futurePathPoints';
+  static const String nextWaypointKey = 'nextWaypoint';
+  static const String destinationKey = 'destination';
 }

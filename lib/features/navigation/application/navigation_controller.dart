@@ -22,7 +22,24 @@ class NavigationProcessingResult {
   });
 }
 
+class ArOverlaySnapshot {
+  final List<math.Point<double>> activePathWorldPoints;
+  final List<math.Point<double>> futurePathWorldPoints;
+  final math.Point<double>? nextWaypointWorldPoint;
+  final math.Point<double>? destinationWorldPoint;
+  final double worldY;
+
+  const ArOverlaySnapshot({
+    required this.activePathWorldPoints,
+    required this.futurePathWorldPoints,
+    required this.nextWaypointWorldPoint,
+    required this.destinationWorldPoint,
+    required this.worldY,
+  });
+}
+
 class NavigationController {
+  static const double _overlayFloorOffsetMeters = 1.35;
   final NavigationResultParser _parser;
   final PathTrackingService _pathTracker;
   final GuidanceService _guidanceService;
@@ -31,6 +48,8 @@ class NavigationController {
   NavigationSession _session = const NavigationSession();
   StreamSubscription<dynamic>? _poseSubscription;
   _ArTrackingAlignment? _arTrackingAlignment;
+  String _languageCode = 'en';
+  String _distanceUnit = 'meter';
 
   NavigationController({
     NavigationResultParser? parser,
@@ -89,7 +108,11 @@ class NavigationController {
             ? trackingUpdate.events.first.type
             : _session.latestGuidanceEventType,
         latestGuidanceMessage: trackingUpdate.events.isNotEmpty
-            ? trackingUpdate.events.first.message
+            ? _buildTrackingInstruction(
+                state: trackingUpdate.state,
+                nextWaypointIndex: trackingUpdate.nextWaypointIndex,
+                distanceToNextWaypointPx: trackingUpdate.distanceToNextWaypointPx,
+              )
             : _session.latestGuidanceMessage,
       );
       onSessionUpdated(_session);
@@ -111,9 +134,12 @@ class NavigationController {
   NavigationProcessingResult processNavigationResult({
     required Map<String, dynamic> rawResult,
     required String languageCode,
+    required String distanceUnit,
     required bool announceCurrentLocation,
     required bool playFullCommands,
   }) {
+    _languageCode = languageCode;
+    _distanceUnit = distanceUnit;
     final parsed = _parser.parse(rawResult);
     final shouldRefreshFloorplan = parsed.mapKey != _session.mapKey;
     final nextSession = _session.copyWith(
@@ -159,8 +185,13 @@ class NavigationController {
           : _guidanceService.buildSignature(playbackCommands),
       latestGuidanceEventType:
           trackingUpdate.events.isNotEmpty ? trackingUpdate.events.first.type : null,
-      latestGuidanceMessage:
-          trackingUpdate.events.isNotEmpty ? trackingUpdate.events.first.message : null,
+      latestGuidanceMessage: trackingUpdate.events.isNotEmpty
+          ? _buildTrackingInstruction(
+              state: trackingUpdate.state,
+              nextWaypointIndex: trackingUpdate.nextWaypointIndex,
+              distanceToNextWaypointPx: trackingUpdate.distanceToNextWaypointPx,
+            )
+          : null,
     );
 
     return NavigationProcessingResult(
@@ -190,6 +221,44 @@ class NavigationController {
     );
   }
 
+  ArOverlaySnapshot? buildArOverlaySnapshot() {
+    final alignment = _arTrackingAlignment;
+    final route = _session.route;
+    if (alignment == null || route == null || route.points.isEmpty) return null;
+
+    final anchorPose = _session.localizedAnchorPose;
+    final trackedPath = _session.trackedPath;
+    final originArPose = alignment.originArPose;
+    if (anchorPose == null || originArPose == null || trackedPath.isEmpty) return null;
+
+    final pathWorldPoints = trackedPath
+        .map(_floorplanPointToArWorld)
+        .whereType<math.Point<double>>()
+        .toList(growable: false);
+    if (pathWorldPoints.isEmpty) return null;
+
+    final activePathWorldPoints = pathWorldPoints.length >= 2
+        ? pathWorldPoints.take(2).toList(growable: false)
+        : pathWorldPoints;
+    final futurePathWorldPoints = pathWorldPoints.length > 2
+        ? pathWorldPoints.skip(1).toList(growable: false)
+        : const <math.Point<double>>[];
+
+    final nextWaypointIndex = _session.nextWaypointIndex.clamp(0, route.points.length - 1);
+    final nextWaypointWorldPoint = _floorplanPointToArWorld(route.points[nextWaypointIndex]);
+    final destinationWorldPoint = _floorplanPointToArWorld(route.points.last);
+    final cameraWorldY = (originArPose.worldY as double?) ?? (originArPose.z as double?) ?? 0.0;
+    final worldY = cameraWorldY - _overlayFloorOffsetMeters;
+
+    return ArOverlaySnapshot(
+      activePathWorldPoints: activePathWorldPoints,
+      futurePathWorldPoints: futurePathWorldPoints,
+      nextWaypointWorldPoint: nextWaypointWorldPoint,
+      destinationWorldPoint: destinationWorldPoint,
+      worldY: worldY,
+    );
+  }
+
   List<String> _selectSpeechTexts({
     required List<NavigationCommand> playbackCommands,
     required String? previousSignature,
@@ -197,6 +266,62 @@ class NavigationController {
     final signature = _guidanceService.buildSignature(playbackCommands);
     if (signature.isEmpty || signature == previousSignature) return const [];
     return _guidanceService.textsFromCommands(playbackCommands);
+  }
+
+  String? _buildTrackingInstruction({
+    required TrackingState state,
+    required int nextWaypointIndex,
+    required double distanceToNextWaypointPx,
+  }) {
+    if (state == TrackingState.offRoute) return null;
+    if (state == TrackingState.arrived) {
+      if (_languageCode == 'zh') return '已到达目的地。';
+      if (_languageCode == 'th') return 'ถึงจุดหมายแล้ว';
+      return 'Arrived at the destination.';
+    }
+
+    final route = _session.route;
+    final pose = _session.currentPose;
+    if (route == null || pose == null || route.points.isEmpty) return null;
+
+    final waypoint = route.points[nextWaypointIndex.clamp(0, route.points.length - 1)];
+    final dx = waypoint.dx - pose.x;
+    final dy = waypoint.dy - pose.y;
+    if (dx.abs() + dy.abs() <= 1e-3) return null;
+
+    final bearingDeg = _normalizeDegrees(math.atan2(-dy, dx) * 180.0 / math.pi);
+    final headingDelta = _signedHeadingDeltaDeg(pose.heading, bearingDeg);
+    final angle = headingDelta.abs().round();
+    final metersPerPixel = _arTrackingAlignment?.metersPerPixel ?? 1.0;
+    final distanceMeters = distanceToNextWaypointPx * metersPerPixel;
+    final distanceText = _formatDistance(distanceMeters);
+
+    if (angle <= 8) {
+      if (_languageCode == 'zh') return '直行$distanceText。';
+      if (_languageCode == 'th') return 'เดินตรง $distanceText';
+      return 'Go straight for $distanceText.';
+    }
+
+    if (_languageCode == 'zh') {
+      final dir = headingDelta > 0 ? '左转' : '右转';
+      return '$dir$angle度，然后前进$distanceText。';
+    }
+    if (_languageCode == 'th') {
+      final dir = headingDelta > 0 ? 'หมุนซ้าย' : 'หมุนขวา';
+      return '$dir $angle องศา แล้วเดิน $distanceText';
+    }
+    final dir = headingDelta > 0 ? 'left' : 'right';
+    return 'Turn $dir $angle degrees, then go $distanceText.';
+  }
+
+  String _formatDistance(double distanceMeters) {
+    if (_distanceUnit == 'feet') {
+      final feet = distanceMeters * 3.28084;
+      return feet >= 10 ? '${feet.round()} feet' : '${feet.toStringAsFixed(1)} feet';
+    }
+    return distanceMeters >= 10
+        ? '${distanceMeters.round()} meters'
+        : '${distanceMeters.toStringAsFixed(1)} meters';
   }
 
   LocalizedPose _transformTrackedPose({
@@ -268,6 +393,47 @@ class NavigationController {
     return _normalizeDegrees(pose.heading as double);
   }
 
+  math.Point<double>? _floorplanPointToArWorld(dynamic floorplanPoint) {
+    final alignment = _arTrackingAlignment;
+    if (alignment == null || alignment.originArPose == null) return null;
+
+    final reference = alignment.referenceFloorplanPose;
+    final origin = alignment.originArPose!;
+    final originArPoint = _extractArPlanarPoint(origin);
+    final captureHeading = _captureHeadingDegrees(origin);
+    final rotationDeg = _normalizeDegrees(reference.heading - captureHeading);
+    final rotationRad = rotationDeg * math.pi / 180.0;
+
+    final targetFloorplanMath = _imagePointToMathPlane(
+      math.Point<double>(floorplanPoint.dx as double, floorplanPoint.dy as double),
+    );
+    final referenceFloorplanMath = _imagePointToMathPlane(
+      math.Point<double>(reference.x, reference.y),
+    );
+
+    final deltaFloorplanMath = math.Point<double>(
+      targetFloorplanMath.x - referenceFloorplanMath.x,
+      targetFloorplanMath.y - referenceFloorplanMath.y,
+    );
+    final deltaMeters = math.Point<double>(
+      deltaFloorplanMath.x * alignment.metersPerPixel,
+      deltaFloorplanMath.y * alignment.metersPerPixel,
+    );
+
+    final inverseRotation = -rotationRad;
+    final arDeltaX =
+        (deltaMeters.x * math.cos(inverseRotation)) - (deltaMeters.y * math.sin(inverseRotation));
+    final arDeltaY =
+        (deltaMeters.x * math.sin(inverseRotation)) + (deltaMeters.y * math.cos(inverseRotation));
+
+    final targetArPlanar = math.Point<double>(
+      originArPoint.x + arDeltaX,
+      originArPoint.y + arDeltaY,
+    );
+
+    return math.Point<double>(targetArPlanar.x, -targetArPlanar.y);
+  }
+
   math.Point<double> _imagePointToMathPlane(math.Point<double> point) {
     return math.Point<double>(point.x, -point.y);
   }
@@ -282,6 +448,14 @@ class NavigationController {
       normalized += 360.0;
     }
     return normalized;
+  }
+
+  double _signedHeadingDeltaDeg(double currentDeg, double targetDeg) {
+    var delta = (targetDeg - currentDeg + 540.0) % 360.0 - 180.0;
+    if (delta < -180.0) {
+      delta += 360.0;
+    }
+    return delta;
   }
 }
 

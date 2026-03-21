@@ -127,7 +127,19 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
   static final AssetSource _defaultCueAsset = AssetSource('sounds/send.wav');
   static final AssetSource _offRouteChimeAsset =
       AssetSource('sounds/offroute_chime.wav');
+  static final AssetSource _offRouteChimeLeftAsset =
+      AssetSource('sounds/offroute_chime_left.wav');
+  static final AssetSource _offRouteChimeRightAsset =
+      AssetSource('sounds/offroute_chime_right.wav');
+  static final AssetSource _offRouteChimeCenterAsset =
+      AssetSource('sounds/offroute_chime_center.wav');
   static final AssetSource _offRouteDrumAsset = AssetSource('sounds/offroute_drum.wav');
+  static final AssetSource _offRouteDrumLeftAsset =
+      AssetSource('sounds/offroute_drum_left.wav');
+  static final AssetSource _offRouteDrumRightAsset =
+      AssetSource('sounds/offroute_drum_right.wav');
+  static final AssetSource _offRouteDrumCenterAsset =
+      AssetSource('sounds/offroute_drum_center.wav');
   static final AssetSource _waypointPassAsset = AssetSource('sounds/waypoint_pass.wav');
   static final AssetSource _waypointErrorAsset = AssetSource('sounds/waypoint_error.wav');
 
@@ -137,6 +149,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
   double? _guidanceSeverity;
   AudioCueDirection _guidanceDirection = AudioCueDirection.center;
   double _guidanceHeadingErrorDeg = 180;
+  double _guidanceRelativeAngleDeg = 0;
   bool _guidanceToneActive = false;
 
   _StereoGuidanceAudioRenderer({AudioPlayer? eventPlayer, AudioPlayer? offRoutePlayer})
@@ -180,6 +193,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     _guidanceSeverity = severity;
     _guidanceDirection = direction;
     _guidanceHeadingErrorDeg = headingErrorDeg;
+    _guidanceRelativeAngleDeg = relativeAngleDeg;
 
     if (_guidanceToneActive) {
       return;
@@ -249,7 +263,10 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
       case GuidanceEventType.offRoute:
         await _playPattern([
           _CueStep(
-            asset: _selectGuidanceAsset(headingErrorDeg: _guidanceHeadingErrorDeg),
+            asset: _selectGuidanceAsset(
+              headingErrorDeg: _guidanceHeadingErrorDeg,
+              direction: _guidanceDirection,
+            ),
             balance: 0,
             rate: 1.00,
             volume: 0.62,
@@ -322,12 +339,14 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
         ? _lerpDouble(0.34, 0.60, severity)
         : _lerpDouble(0.40, 0.68, severity);
 
-    final asset = _selectGuidanceAsset(headingErrorDeg: _guidanceHeadingErrorDeg);
-    final balance = switch (_guidanceDirection) {
-      AudioCueDirection.left => -0.18,
-      AudioCueDirection.right => 0.18,
-      AudioCueDirection.center => 0.0,
-    };
+    final asset = _selectGuidanceAsset(
+      headingErrorDeg: _guidanceHeadingErrorDeg,
+      direction: _guidanceDirection,
+    );
+    final balance = _stereoBalanceForRelativeAngle(
+      relativeAngleDeg: _guidanceRelativeAngleDeg,
+      direction: _guidanceDirection,
+    );
 
     try {
       await _offRoutePlayer.play(
@@ -345,14 +364,49 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     _guidanceSeverity = null;
     _guidanceDirection = AudioCueDirection.center;
     _guidanceHeadingErrorDeg = 180;
+    _guidanceRelativeAngleDeg = 0;
     _guidanceTimer?.cancel();
     _guidanceTimer = null;
     unawaited(_offRoutePlayer.stop());
   }
 
-  AssetSource _selectGuidanceAsset({required double headingErrorDeg}) {
+  double _stereoBalanceForRelativeAngle({
+    required double relativeAngleDeg,
+    required AudioCueDirection direction,
+  }) {
+    final clampedAngle = relativeAngleDeg.clamp(-75.0, 75.0);
+    final normalized = clampedAngle / 75.0;
+    final panFromAngle = normalized * 0.72;
+
+    if (panFromAngle.abs() > 0.02) {
+      return panFromAngle.clamp(-0.92, 0.92);
+    }
+
+    return switch (direction) {
+      AudioCueDirection.left => -0.48,
+      AudioCueDirection.right => 0.48,
+      AudioCueDirection.center => 0.0,
+    };
+  }
+
+  AssetSource _selectGuidanceAsset({
+    required double headingErrorDeg,
+    required AudioCueDirection direction,
+  }) {
     final useChime = headingErrorDeg < 55;
-    return useChime ? _offRouteChimeAsset : _offRouteDrumAsset;
+    if (useChime) {
+      return switch (direction) {
+        AudioCueDirection.left => _offRouteChimeLeftAsset,
+        AudioCueDirection.right => _offRouteChimeRightAsset,
+        AudioCueDirection.center => _offRouteChimeCenterAsset,
+      };
+    }
+
+    return switch (direction) {
+      AudioCueDirection.left => _offRouteDrumLeftAsset,
+      AudioCueDirection.right => _offRouteDrumRightAsset,
+      AudioCueDirection.center => _offRouteDrumCenterAsset,
+    };
   }
 
   int _guidanceIntervalMsForHeadingError(double headingErrorDeg) {

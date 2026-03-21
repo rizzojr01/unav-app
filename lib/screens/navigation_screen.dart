@@ -65,7 +65,7 @@ class NavigationScreen extends StatefulWidget {
 class _NavigationScreenState extends State<NavigationScreen> with WidgetsBindingObserver {
   static const double _headingLockThresholdDeg = 3.0;
   static const double _spatialCueDistanceMeters = 2.0;
-  static const bool _enableSpatialAudioExperiment = true;
+  static const bool _enableSpatialAudioExperiment = false;
   static const bool _enableDirectionalDrumStartupTest = false;
 
   // ---- Floorplan / path rendering state ----

@@ -73,6 +73,17 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
       - assets/sounds/send.wav
+      - assets/sounds/offroute_beep.wav
+      - assets/sounds/offroute_chime.wav
+      - assets/sounds/offroute_chime_left.wav
+      - assets/sounds/offroute_chime_right.wav
+      - assets/sounds/offroute_chime_center.wav
+      - assets/sounds/offroute_drum.wav
+      - assets/sounds/offroute_drum_left.wav
+      - assets/sounds/offroute_drum_right.wav
+      - assets/sounds/offroute_drum_center.wav
+      - assets/sounds/waypoint_pass.wav
+      - assets/sounds/waypoint_error.wav
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 
@@ -104,4 +115,5 @@ flutter:
 flutter_icons:
   android: true
   ios: true
+  remove_alpha_ios: true
   image_path: "assets/icon/unav_icon.png"

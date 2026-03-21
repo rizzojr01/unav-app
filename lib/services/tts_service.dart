@@ -1,12 +1,33 @@
 // lib/services/tts_service.dart
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter_tts/flutter_tts.dart';
 
 class TTSService {
   static final FlutterTts _tts = FlutterTts();
   static String _currentLang = 'en-US';
+  static bool _iosAudioConfigured = false;
+
+  static Future<void> _configurePlatformAudioSession() async {
+    if (!Platform.isIOS || _iosAudioConfigured) return;
+
+    await _tts.setSharedInstance(true);
+    await _tts.autoStopSharedSession(false);
+    await _tts.setIosAudioCategory(
+      IosTextToSpeechAudioCategory.playback,
+      <IosTextToSpeechAudioCategoryOptions>[
+        IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+        IosTextToSpeechAudioCategoryOptions.allowBluetooth,
+        IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
+        IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
+      ],
+      IosTextToSpeechAudioMode.voicePrompt,
+    );
+    _iosAudioConfigured = true;
+  }
 
   static Future<void> setLanguage(String langCode) async {
+    await _configurePlatformAudioSession();
     try {
       await _tts.setEngine('com.google.android.tts');
     } catch (e) {
@@ -30,6 +51,7 @@ class TTSService {
     final cleaned = _sanitize(text);
     if (cleaned.isEmpty) return;
 
+    await _configurePlatformAudioSession();
     await _tts.stop();
     await _tts.setLanguage(_currentLang);
     await _tts.speak(cleaned);
@@ -53,6 +75,7 @@ class TTSService {
     if (cleaned.isEmpty) return;
 
     final completer = Completer<void>();
+    await _configurePlatformAudioSession();
     await _tts.stop();
     await _tts.setLanguage(_currentLang);
     await _tts.speak(cleaned);

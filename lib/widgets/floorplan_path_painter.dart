@@ -39,7 +39,7 @@ class FloorplanPathPainter extends CustomPainter {
 
     // --------- First-person view (rotated, centered on current location) ----------
     if (firstPersonView && headingAngleDeg != null && pathPoints.isNotEmpty) {
-      final double angleRad = - (headingAngleDeg! + 90) * math.pi / 180.0;
+      final double angleRad = (headingAngleDeg! - 90) * math.pi / 180.0;
       final double scale = 1.5;
       final Offset cur = pathPoints[0];
 
@@ -72,7 +72,7 @@ class FloorplanPathPainter extends CustomPainter {
       // Draw heading arrow from current position
       if (headingAngleDeg != null && pathPoints.isNotEmpty) {
         final Offset startPt = pathPoints.first;
-        final double theta = headingAngleDeg! * math.pi / 180.0;
+        final double theta = -headingAngleDeg! * math.pi / 180.0;
         final Offset arrowTip = startPt + Offset(
           arrowLength * math.cos(theta),
           arrowLength * math.sin(theta),
@@ -163,7 +163,7 @@ class FloorplanPathPainter extends CustomPainter {
     // Draw heading arrow from current position
     if (headingAngleDeg != null && mapped.isNotEmpty) {
       final Offset startPt = mapped.first;
-      final double theta = headingAngleDeg! * math.pi / 180.0;
+      final double theta = -headingAngleDeg! * math.pi / 180.0;
       final Offset arrowTip = startPt + Offset(
         arrowLength * math.cos(theta),
         arrowLength * math.sin(theta),
@@ -228,6 +228,79 @@ List<Offset> parsePathCoordsFromResult(Map<String, dynamic>? navResultData) {
           (pt[0] as num).toDouble(),
           (pt[1] as num).toDouble()))
       .toList();
+}
+
+/// Extracts the current pose in floorplan pixel coordinates when available.
+Offset? parseFloorplanPose(Map<String, dynamic>? navResultData) {
+  if (navResultData == null) return null;
+
+  final dynamic pose = navResultData['floorplan_pose'];
+  if (pose is! Map) return null;
+
+  double? readNum(dynamic value) => value is num ? value.toDouble() : null;
+
+  final double? x = readNum(pose['x']) ??
+      readNum(pose['px']) ??
+      readNum(pose['u']) ??
+      readNum(pose['col']);
+  final double? y = readNum(pose['y']) ??
+      readNum(pose['py']) ??
+      readNum(pose['v']) ??
+      readNum(pose['row']);
+
+  if (x != null && y != null) {
+    return Offset(x, y);
+  }
+
+  final dynamic xy = pose['xy'] ?? pose['point'] ?? pose['position'] ?? pose['loc'];
+  if (xy is List && xy.length >= 2 && xy[0] is num && xy[1] is num) {
+    return Offset((xy[0] as num).toDouble(), (xy[1] as num).toDouble());
+  }
+
+  return null;
+}
+
+/// Projects the current pose to the closest point on the path and returns the
+/// remaining polyline from that point onward.
+List<Offset> buildTrackedPath(List<Offset> fullPath, Offset? currentPose) {
+  if (fullPath.length < 2 || currentPose == null) return List<Offset>.from(fullPath);
+
+  double bestDistanceSq = double.infinity;
+  Offset? bestProjection;
+  int bestSegmentStart = 0;
+
+  for (int i = 0; i < fullPath.length - 1; i++) {
+    final Offset a = fullPath[i];
+    final Offset b = fullPath[i + 1];
+    final Offset ab = b - a;
+    final double abLenSq = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (abLenSq <= 1e-6) continue;
+
+    final Offset ap = currentPose - a;
+    final double t = ((ap.dx * ab.dx) + (ap.dy * ab.dy)) / abLenSq;
+    final double clampedT = t.clamp(0.0, 1.0);
+    final Offset projection = Offset(
+      a.dx + ab.dx * clampedT,
+      a.dy + ab.dy * clampedT,
+    );
+
+    final double dx = currentPose.dx - projection.dx;
+    final double dy = currentPose.dy - projection.dy;
+    final double distanceSq = dx * dx + dy * dy;
+
+    if (distanceSq < bestDistanceSq) {
+      bestDistanceSq = distanceSq;
+      bestProjection = projection;
+      bestSegmentStart = i;
+    }
+  }
+
+  if (bestProjection == null) return List<Offset>.from(fullPath);
+
+  return [
+    bestProjection,
+    ...fullPath.skip(bestSegmentStart + 1),
+  ];
 }
 
 /// Splits a global navigation path into segments grouped by floor.

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
 import 'providers/settings_provider.dart';
-import 'screens/startup_screen.dart';
+import 'screens/boot_screen.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(
     ChangeNotifierProvider(
       create: (_) => SettingsProvider(),
@@ -25,7 +27,7 @@ class UNavApp extends StatelessWidget {
           bodyLarge: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
         ),
       ),
-      home: const StartupScreen(),
+      home: const BootScreen(),
       debugShowCheckedModeBanner: false,
     );
   }

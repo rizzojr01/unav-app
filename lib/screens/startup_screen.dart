@@ -79,20 +79,14 @@ class _StartupScreenState extends State<StartupScreen> {
   @override
   void initState() {
     super.initState();
-    // 1) Let ApiService use the stored server first
-    ServerAddressService.applyToApi();
-    // 2) Load unit/language/turnMode into Provider
-    _loadUnitLanguageTurnModeToProvider();
-    // 3) Load cached profile (including avatar local/remote)
-    _loadCachedProfileAndPrefs();
-    // 4) Register form validation listeners
     _regPwdCtl.addListener(_validateRegisterForm);
     _regPwd2Ctl.addListener(_validateRegisterForm);
     _regEmailCtl.addListener(_validateRegisterForm);
     _regNicknameCtl.addListener(_validateRegisterForm);
     _regCodeCtl.addListener(_validateRegisterForm);
-    // 5) Auto login
-    _tryAutoLogin();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initializeStartupScreen();
+    });
   }
 
   @override
@@ -106,6 +100,13 @@ class _StartupScreenState extends State<StartupScreen> {
     _regPwd2Ctl.dispose();
     _regCodeCtl.dispose();
     super.dispose();
+  }
+
+  Future<void> _initializeStartupScreen() async {
+    await ServerAddressService.applyToApi();
+    await _loadUnitLanguageTurnModeToProvider();
+    await _loadCachedProfileAndPrefs();
+    await _tryAutoLogin();
   }
 
   // -------------------- Loaders --------------------

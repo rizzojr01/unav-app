@@ -13,6 +13,9 @@ class PathTrackingService implements PathTracker {
   static const double _offRouteThresholdPx = 72;
   static const double _approachThresholdPx = 120;
   static const double _turnNowThresholdPx = 40;
+  static const double _offRouteThresholdMeters = 2.0;
+  static const double _approachThresholdMeters = 4.5;
+  static const double _turnNowThresholdMeters = 0.95;
 
   const PathTrackingService();
 
@@ -20,6 +23,7 @@ class PathTrackingService implements PathTracker {
   TrackingUpdate update({
     required NavigationSession session,
     required NavigationRoute route,
+    double? metersPerPixel,
   }) {
     final pose = session.currentPose;
     final anchor = session.localizedAnchorPose;
@@ -41,8 +45,31 @@ class PathTrackingService implements PathTracker {
       Offset(anchor.x, anchor.y),
       ...route.points,
     ];
+    final offRouteThresholdPx = _thresholdPx(
+      metersPerPixel: metersPerPixel,
+      fallbackPx: _offRouteThresholdPx,
+      thresholdMeters: _offRouteThresholdMeters,
+    );
+    final approachThresholdPx = _thresholdPx(
+      metersPerPixel: metersPerPixel,
+      fallbackPx: _approachThresholdPx,
+      thresholdMeters: _approachThresholdMeters,
+    );
+    final turnNowThresholdPx = _thresholdPx(
+      metersPerPixel: metersPerPixel,
+      fallbackPx: _turnNowThresholdPx,
+      thresholdMeters: _turnNowThresholdMeters,
+    );
     final projection = _projectToPath(fixedPolyline, currentPoint);
-    final activeWaypointIndex = projection.segmentIndex.clamp(0, route.points.length - 1);
+    final projectedWaypointIndex =
+        projection.segmentIndex.clamp(0, route.points.length - 1);
+    var activeWaypointIndex = projectedWaypointIndex;
+    if (route.points.isNotEmpty &&
+        activeWaypointIndex < route.points.length - 1 &&
+        (route.points[activeWaypointIndex] - currentPoint).distance <=
+            turnNowThresholdPx) {
+      activeWaypointIndex += 1;
+    }
 
     final trackedPath = <Offset>[
       currentPoint,
@@ -56,7 +83,10 @@ class PathTrackingService implements PathTracker {
       currentPoint: currentPoint,
       projectedPoint: projection.projectedPoint,
     );
-    final offRouteSeverity = _normalizedOffRouteSeverity(projection.distanceToPathPx);
+    final offRouteSeverity = _normalizedOffRouteSeverity(
+      projection.distanceToPathPx,
+      offRouteThresholdPx: offRouteThresholdPx,
+    );
     final events = _buildEvents(
       projection: projection,
       trackedPath: trackedPath,
@@ -64,11 +94,14 @@ class PathTrackingService implements PathTracker {
       previousWaypointIndex: session.nextWaypointIndex,
       activeWaypointIndex: activeWaypointIndex,
       waypointCount: route.points.length,
+      offRouteThresholdPx: offRouteThresholdPx,
+      approachThresholdPx: approachThresholdPx,
+      turnNowThresholdPx: turnNowThresholdPx,
     );
 
-    final state = projection.distanceToPathPx > _offRouteThresholdPx
+    final state = projection.distanceToPathPx > offRouteThresholdPx
         ? TrackingState.offRoute
-        : distanceToNextWaypointPx <= _turnNowThresholdPx &&
+        : distanceToNextWaypointPx <= turnNowThresholdPx &&
                 activeWaypointIndex == route.points.length - 1
             ? TrackingState.arrived
             : TrackingState.tracking;
@@ -95,8 +128,11 @@ class PathTrackingService implements PathTracker {
     required int previousWaypointIndex,
     required int activeWaypointIndex,
     required int waypointCount,
+    required double offRouteThresholdPx,
+    required double approachThresholdPx,
+    required double turnNowThresholdPx,
   }) {
-    if (projection.distanceToPathPx > _offRouteThresholdPx) {
+    if (projection.distanceToPathPx > offRouteThresholdPx) {
       return const [
         GuidanceEvent(
           type: GuidanceEventType.offRoute,
@@ -125,7 +161,7 @@ class PathTrackingService implements PathTracker {
       ];
     }
 
-    if (distanceToNextWaypointPx <= _turnNowThresholdPx) {
+    if (distanceToNextWaypointPx <= turnNowThresholdPx) {
       if (activeWaypointIndex == waypointCount - 1) {
         return const [
           GuidanceEvent(
@@ -142,7 +178,7 @@ class PathTrackingService implements PathTracker {
       ];
     }
 
-    if (distanceToNextWaypointPx <= _approachThresholdPx) {
+    if (distanceToNextWaypointPx <= approachThresholdPx) {
       return [
         GuidanceEvent(
           type: GuidanceEventType.approachingWaypoint,
@@ -219,10 +255,24 @@ class PathTrackingService implements PathTracker {
     return cross < 0 ? AudioCueDirection.left : AudioCueDirection.right;
   }
 
-  double _normalizedOffRouteSeverity(double distanceToPathPx) {
+  double _normalizedOffRouteSeverity(
+    double distanceToPathPx, {
+    required double offRouteThresholdPx,
+  }) {
     const end = 240.0;
-    final normalized = (distanceToPathPx - _offRouteThresholdPx) / (end - _offRouteThresholdPx);
+    final normalized =
+        (distanceToPathPx - offRouteThresholdPx) / (end - offRouteThresholdPx);
     return normalized.clamp(0.0, 1.0);
+  }
+
+  double _thresholdPx({
+    required double? metersPerPixel,
+    required double fallbackPx,
+    required double thresholdMeters,
+  }) {
+    final scale = metersPerPixel;
+    if (scale == null || scale <= 0) return fallbackPx;
+    return thresholdMeters / scale;
   }
 }
 

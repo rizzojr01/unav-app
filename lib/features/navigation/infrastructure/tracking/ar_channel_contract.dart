@@ -30,4 +30,6 @@ class ArChannelContract {
   static const String futurePathPointsKey = 'futurePathPoints';
   static const String nextWaypointKey = 'nextWaypoint';
   static const String destinationKey = 'destination';
+  static const String waypointPulsePeriodSecKey = 'waypointPulsePeriodSec';
+  static const String waypointPulseActiveKey = 'waypointPulseActive';
 }

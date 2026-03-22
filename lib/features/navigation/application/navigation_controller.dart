@@ -62,6 +62,7 @@ class NavigationController {
         _poseProvider = poseProvider;
 
   NavigationSession get session => _session;
+  double? get metersPerPixel => _arTrackingAlignment?.metersPerPixel;
 
   void configureArTrackingAlignment({
     required LocalizedPose referenceFloorplanPose,
@@ -92,6 +93,7 @@ class NavigationController {
       final trackingUpdate = _pathTracker.update(
         session: nextSession,
         route: route,
+        metersPerPixel: _arTrackingAlignment?.metersPerPixel,
       );
 
       _session = nextSession.copyWith(
@@ -155,6 +157,7 @@ class NavigationController {
     final trackingUpdate = _pathTracker.update(
       session: nextSession,
       route: parsed.route,
+      metersPerPixel: _arTrackingAlignment?.metersPerPixel,
     );
 
     final filteredCommands = _guidanceService.filterCommands(

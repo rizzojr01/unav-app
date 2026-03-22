@@ -19,6 +19,7 @@ class SpatialAudioChannelContract {
   static const String headingErrorDegKey = 'headingErrorDeg';
   static const String relativeAngleDegKey = 'relativeAngleDeg';
   static const String sourceDistanceMetersKey = 'sourceDistanceMeters';
+  static const String distanceToWaypointMetersKey = 'distanceToWaypointMeters';
   static const String volumeKey = 'volume';
   static const String rateKey = 'rate';
 }

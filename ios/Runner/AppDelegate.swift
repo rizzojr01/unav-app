@@ -1,5 +1,6 @@
 import ARKit
 import AVFoundation
+import CoreMotion
 import Flutter
 import UIKit
 
@@ -33,6 +34,8 @@ private enum ArChannelContract {
   static let futurePathPointsKey = "futurePathPoints"
   static let nextWaypointKey = "nextWaypoint"
   static let destinationKey = "destination"
+  static let waypointPulsePeriodSecKey = "waypointPulsePeriodSec"
+  static let waypointPulseActiveKey = "waypointPulseActive"
 }
 
 private enum SpatialAudioChannelContract {
@@ -54,12 +57,14 @@ private enum SpatialAudioChannelContract {
   static let headingErrorDegKey = "headingErrorDeg"
   static let relativeAngleDegKey = "relativeAngleDeg"
   static let sourceDistanceMetersKey = "sourceDistanceMeters"
+  static let distanceToWaypointMetersKey = "distanceToWaypointMeters"
   static let volumeKey = "volume"
   static let rateKey = "rate"
 }
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  private let enableNativeHrtfProbeApp = false
   private lazy var flutterEngine = FlutterEngine(name: "unav_main_engine")
   private let arTrackingBridge = IOSArTrackingBridge()
   private let spatialAudioBridge = IOSSpatialAudioBridge()
@@ -68,6 +73,14 @@ private enum SpatialAudioChannelContract {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    if enableNativeHrtfProbeApp {
+      let probeViewController = HRTFProbeViewController()
+      window = UIWindow(frame: UIScreen.main.bounds)
+      window?.rootViewController = probeViewController
+      window?.makeKeyAndVisible()
+      return true
+    }
+
     let started = flutterEngine.run()
     if started {
       GeneratedPluginRegistrant.register(with: flutterEngine)
@@ -90,6 +103,435 @@ private enum SpatialAudioChannelContract {
     window?.makeKeyAndVisible()
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+}
+
+private final class HRTFProbeViewController: UIViewController {
+  private enum ProbeStage: Int {
+    case engine2D = 0
+    case environment = 1
+    case hrtf = 2
+
+    var title: String {
+      switch self {
+      case .engine2D: return "Engine 2D"
+      case .environment: return "Environment"
+      case .hrtf: return "HRTF"
+      }
+    }
+  }
+
+  private final class ProbeAudioLab {
+    private let session = AVAudioSession.sharedInstance()
+    private var engine: AVAudioEngine?
+    private var environmentNode: AVAudioEnvironmentNode?
+    private var playerNode: AVAudioPlayerNode?
+    private var buffer: AVAudioPCMBuffer?
+    private var currentStage: ProbeStage = .engine2D
+
+    func start(stage: ProbeStage, relativeAngleDeg: Double, sourceDistanceMeters: Double) throws {
+      stop()
+      try configureSession()
+      currentStage = stage
+
+      let engine = AVAudioEngine()
+      let playerNode = AVAudioPlayerNode()
+      let monoFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: session.sampleRate,
+        channels: 1,
+        interleaved: false
+      )!
+      let outputFormat = engine.outputNode.inputFormat(forBus: 0)
+      let buffer = try makeLoopBuffer(format: monoFormat)
+
+      engine.attach(playerNode)
+
+      switch stage {
+      case .engine2D:
+        do {
+          engine.connect(playerNode, to: engine.mainMixerNode, format: monoFormat)
+        } catch {
+          throw NSError(
+            domain: "HRTFProbe",
+            code: 21,
+            userInfo: [NSLocalizedDescriptionKey: "2D connect failed: \(error.localizedDescription)"]
+          )
+        }
+      case .environment, .hrtf:
+        let environmentNode = AVAudioEnvironmentNode()
+        engine.attach(environmentNode)
+        do {
+          engine.connect(playerNode, to: environmentNode, format: monoFormat)
+          engine.connect(environmentNode, to: engine.mainMixerNode, format: outputFormat)
+        } catch {
+          throw NSError(
+            domain: "HRTFProbe",
+            code: 22,
+            userInfo: [NSLocalizedDescriptionKey: "3D connect failed: \(error.localizedDescription)"]
+          )
+        }
+        environmentNode.outputVolume = 1.0
+        environmentNode.listenerPosition = AVAudio3DPoint(x: 0, y: 0, z: 0)
+        environmentNode.listenerAngularOrientation = AVAudio3DAngularOrientation(
+          yaw: 0,
+          pitch: 0,
+          roll: 0
+        )
+        playerNode.renderingAlgorithm =
+          stage == .hrtf ? .HRTFHQ : .equalPowerPanning
+        playerNode.reverbBlend = stage == .hrtf ? 18 : 0
+        self.environmentNode = environmentNode
+      }
+
+      engine.prepare()
+      do {
+        try engine.start()
+      } catch {
+        throw NSError(
+          domain: "HRTFProbe",
+          code: 23,
+          userInfo: [NSLocalizedDescriptionKey: "Engine start failed: \(error.localizedDescription)"]
+        )
+      }
+
+      playerNode.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
+      playerNode.volume = 0.92
+      playerNode.play()
+
+      self.engine = engine
+      self.playerNode = playerNode
+      self.buffer = buffer
+      updateSource(relativeAngleDeg: relativeAngleDeg, sourceDistanceMeters: sourceDistanceMeters)
+    }
+
+    func stop() {
+      playerNode?.stop()
+      engine?.stop()
+      environmentNode = nil
+      playerNode = nil
+      engine = nil
+    }
+
+    func updateListenerYawDegrees(_ yawDegrees: Double) {
+      environmentNode?.listenerAngularOrientation = AVAudio3DAngularOrientation(
+        yaw: Float(-yawDegrees),
+        pitch: 0,
+        roll: 0
+      )
+    }
+
+    func updateSource(relativeAngleDeg: Double, sourceDistanceMeters: Double) {
+      guard let playerNode else { return }
+      let lateralBoost = currentStage == .hrtf ? 1.35 : 1.0
+      let effectiveAngleDeg = max(-85.0, min(85.0, relativeAngleDeg * lateralBoost))
+      let theta = effectiveAngleDeg * .pi / 180.0
+      let distance = max(0.8, min(6.0, sourceDistanceMeters))
+      let x = Float(sin(theta) * distance)
+      let z = Float(-cos(theta) * distance)
+      playerNode.position = AVAudio3DPoint(x: x, y: 0.0, z: z)
+    }
+
+    private func configureSession() throws {
+      try session.setCategory(
+        .playback,
+        mode: .default,
+        options: [.mixWithOthers]
+      )
+      try session.setPreferredSampleRate(48_000)
+      try session.setActive(true)
+    }
+
+    private func makeLoopBuffer(format: AVAudioFormat) throws -> AVAudioPCMBuffer {
+      if let buffer, buffer.format.sampleRate == format.sampleRate {
+        return buffer
+      }
+      let durationSeconds = 1.0
+      let frameCount = AVAudioFrameCount(format.sampleRate * durationSeconds)
+      guard let buffer = AVAudioPCMBuffer(
+        pcmFormat: format,
+        frameCapacity: frameCount
+      ) else {
+        throw NSError(
+          domain: "HRTFProbe",
+          code: 10,
+          userInfo: [NSLocalizedDescriptionKey: "Unable to allocate mono PCM buffer."]
+        )
+      }
+      buffer.frameLength = frameCount
+      guard let channelData = buffer.floatChannelData?[0] else {
+        throw NSError(
+          domain: "HRTFProbe",
+          code: 11,
+          userInfo: [NSLocalizedDescriptionKey: "Unable to access mono channel data."]
+        )
+      }
+
+      let sampleRate = format.sampleRate
+      let burstStarts = [0.0, 0.28, 0.56, 0.84]
+      let burstDuration = 0.07
+      let baseFrequency = 150.0
+
+      for frame in 0..<Int(frameCount) {
+        let time = Double(frame) / sampleRate
+        var sample = 0.0
+        for burstStart in burstStarts {
+          let dt = time - burstStart
+          if dt >= 0 && dt <= burstDuration {
+            let envelope = exp(-dt * 26.0)
+            let tone = sin(2.0 * .pi * baseFrequency * dt)
+            let overtone = 0.40 * sin(2.0 * .pi * baseFrequency * 2.1 * dt)
+            sample += (tone + overtone) * envelope
+          }
+        }
+        channelData[frame] = Float(sample * 0.55)
+      }
+
+      self.buffer = buffer
+      return buffer
+    }
+  }
+
+  private let audioLab = ProbeAudioLab()
+  private let motionManager = CMMotionManager()
+  private var baseYawRadians: Double?
+  private var currentSourceAngleDeg = 45.0
+  private var currentWaypointDistanceMeters = 6.0
+  private var currentStage: ProbeStage = .engine2D
+
+  private let titleLabel = UILabel()
+  private let statusLabel = UILabel()
+  private let yawLabel = UILabel()
+  private let sourceLabel = UILabel()
+
+  init() {
+    super.init(nibName: nil, bundle: nil)
+  }
+
+  required init?(coder: NSCoder) {
+    super.init(coder: coder)
+  }
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    view.backgroundColor = UIColor(red: 0.05, green: 0.07, blue: 0.10, alpha: 1.0)
+    setupUI()
+
+    startMotionUpdates()
+  }
+
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    startCurrentStage()
+  }
+
+  override func viewDidDisappear(_ animated: Bool) {
+    super.viewDidDisappear(animated)
+    motionManager.stopDeviceMotionUpdates()
+    audioLab.stop()
+  }
+
+  private func setupUI() {
+    titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    titleLabel.text = "UNav HRTF Probe"
+    titleLabel.font = UIFont.boldSystemFont(ofSize: 28)
+    titleLabel.textColor = .white
+
+    statusLabel.translatesAutoresizingMaskIntoConstraints = false
+    statusLabel.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+    statusLabel.textColor = UIColor.white.withAlphaComponent(0.8)
+    statusLabel.numberOfLines = 0
+
+    yawLabel.translatesAutoresizingMaskIntoConstraints = false
+    yawLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 16, weight: .regular)
+    yawLabel.textColor = UIColor(red: 0.68, green: 0.92, blue: 1.0, alpha: 1.0)
+    yawLabel.text = "Yaw: 0 deg"
+
+    sourceLabel.translatesAutoresizingMaskIntoConstraints = false
+    sourceLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 16, weight: .regular)
+    sourceLabel.textColor = UIColor(red: 0.75, green: 1.0, blue: 0.82, alpha: 1.0)
+
+    let stack = UIStackView(arrangedSubviews: [
+      titleLabel,
+      statusLabel,
+      yawLabel,
+      sourceLabel,
+      makeStageControl(),
+      makeButtonRow(title: "Source", buttons: [
+        makeSourceButton("Left", angle: -90),
+        makeSourceButton("Front", angle: 0),
+        makeSourceButton("Right", angle: 90),
+        makeSourceButton("Back", angle: 180),
+      ]),
+      makeButtonRow(title: "Waypoint Distance", buttons: [
+        makeDistanceButton("3m", distance: 3.0),
+        makeDistanceButton("6m", distance: 6.0),
+        makeDistanceButton("7m", distance: 7.0),
+        makeDistanceButton("10m", distance: 10.0),
+      ]),
+      makeActionButton("Recenter Yaw", action: #selector(recenterYaw)),
+    ])
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .vertical
+    stack.spacing = 18
+
+    view.addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 20),
+      stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+      stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
+    ])
+
+    updateSourceLabel()
+  }
+
+  private func makeStageControl() -> UIView {
+    let label = UILabel()
+    label.text = "Stage"
+    label.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+    label.textColor = UIColor.white.withAlphaComponent(0.7)
+
+    let control = UISegmentedControl(items: [
+      ProbeStage.engine2D.title,
+      ProbeStage.environment.title,
+      ProbeStage.hrtf.title,
+    ])
+    control.selectedSegmentIndex = currentStage.rawValue
+    control.backgroundColor = UIColor.white.withAlphaComponent(0.08)
+    if #available(iOS 13.0, *) {
+      control.selectedSegmentTintColor = UIColor(red: 0.16, green: 0.36, blue: 0.58, alpha: 1.0)
+    }
+    control.setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
+    control.setTitleTextAttributes(
+      [.foregroundColor: UIColor.white.withAlphaComponent(0.8)],
+      for: .normal
+    )
+    control.addTarget(self, action: #selector(handleStageChanged(_:)), for: .valueChanged)
+
+    let container = UIStackView(arrangedSubviews: [label, control])
+    container.axis = .vertical
+    container.spacing = 8
+    return container
+  }
+
+  private func makeButtonRow(title: String, buttons: [UIButton]) -> UIStackView {
+    let rowLabel = UILabel()
+    rowLabel.text = title
+    rowLabel.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+    rowLabel.textColor = UIColor.white.withAlphaComponent(0.7)
+
+    let buttonsRow = UIStackView(arrangedSubviews: buttons)
+    buttonsRow.axis = .horizontal
+    buttonsRow.spacing = 10
+    buttonsRow.distribution = .fillEqually
+
+    let container = UIStackView(arrangedSubviews: [rowLabel, buttonsRow])
+    container.axis = .vertical
+    container.spacing = 8
+    return container
+  }
+
+  private func makeActionButton(_ title: String, action: Selector) -> UIButton {
+    let button = UIButton(type: .system)
+    button.setTitle(title, for: .normal)
+    button.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+    button.tintColor = .white
+    button.backgroundColor = UIColor(red: 0.16, green: 0.36, blue: 0.58, alpha: 1.0)
+    button.layer.cornerRadius = 12
+    button.heightAnchor.constraint(equalToConstant: 46).isActive = true
+    button.addTarget(self, action: action, for: .touchUpInside)
+    return button
+  }
+
+  private func makeSourceButton(_ title: String, angle: Double) -> UIButton {
+    let button = makeActionButton(title, action: #selector(handleSourceButton(_:)))
+    button.tag = Int(angle)
+    return button
+  }
+
+  private func makeDistanceButton(_ title: String, distance: Double) -> UIButton {
+    let button = makeActionButton(title, action: #selector(handleDistanceButton(_:)))
+    button.accessibilityIdentifier = "\(distance)"
+    return button
+  }
+
+  private func startMotionUpdates() {
+    guard motionManager.isDeviceMotionAvailable else {
+      statusLabel.text = "Device motion unavailable"
+      return
+    }
+
+    motionManager.deviceMotionUpdateInterval = 1.0 / 60.0
+    motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, _ in
+      guard let self, let motion else { return }
+      let yaw = motion.attitude.yaw
+      if self.baseYawRadians == nil {
+        self.baseYawRadians = yaw
+      }
+      let baseYaw = self.baseYawRadians ?? yaw
+      let relativeYawDeg = (yaw - baseYaw) * 180.0 / .pi
+      self.audioLab.updateListenerYawDegrees(relativeYawDeg)
+      self.yawLabel.text = String(format: "Yaw: %.1f deg", relativeYawDeg)
+    }
+  }
+
+  private func updateSourcePosition() {
+    audioLab.updateSource(
+      relativeAngleDeg: currentSourceAngleDeg,
+      sourceDistanceMeters: computedSourceDistanceMeters
+    )
+    updateSourceLabel()
+  }
+
+  private func startCurrentStage() {
+    do {
+      try audioLab.start(
+        stage: currentStage,
+        relativeAngleDeg: currentSourceAngleDeg,
+        sourceDistanceMeters: computedSourceDistanceMeters
+      )
+      statusLabel.text = "Stage: \(currentStage.title)"
+      updateSourcePosition()
+    } catch {
+      statusLabel.text = "Audio init failed (\(currentStage.title)): \(error.localizedDescription)"
+    }
+  }
+
+  private func updateSourceLabel() {
+    sourceLabel.text = String(
+      format: "Source: %.0f deg | waypoint %.1f m -> source %.1f m",
+      currentSourceAngleDeg,
+      currentWaypointDistanceMeters,
+      computedSourceDistanceMeters
+    )
+  }
+
+  private var computedSourceDistanceMeters: Double {
+    min(currentWaypointDistanceMeters, 6.0)
+  }
+
+  @objc private func recenterYaw() {
+    baseYawRadians = nil
+  }
+
+  @objc private func handleStageChanged(_ sender: UISegmentedControl) {
+    guard let stage = ProbeStage(rawValue: sender.selectedSegmentIndex) else { return }
+    currentStage = stage
+    startCurrentStage()
+  }
+
+  @objc private func handleSourceButton(_ sender: UIButton) {
+    currentSourceAngleDeg = Double(sender.tag)
+    updateSourcePosition()
+  }
+
+  @objc private func handleDistanceButton(_ sender: UIButton) {
+    guard
+      let text = sender.accessibilityIdentifier,
+      let distance = Double(text)
+    else { return }
+    currentWaypointDistanceMeters = distance
+    updateSourcePosition()
   }
 }
 
@@ -397,13 +839,19 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
       }
     }
 
+    let pulsePeriod =
+      (args[ArChannelContract.waypointPulsePeriodSecKey] as? NSNumber)?.doubleValue ?? 1.0
+    let pulseActive = args[ArChannelContract.waypointPulseActiveKey] as? Bool ?? false
+
     if let nextWaypointArgs = args[ArChannelContract.nextWaypointKey] as? [String: Any],
        let nextPoint = point(from: nextWaypointArgs) {
       overlayRootNode.addChildNode(
         buildMarkerNode(
           at: nextPoint,
           radius: 0.08,
-          color: UIColor.systemTeal
+          color: UIColor.systemTeal,
+          pulsePeriod: pulsePeriod,
+          pulseActive: pulseActive
         )
       )
     }
@@ -442,7 +890,9 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
   private func buildMarkerNode(
     at point: SCNVector3,
     radius: CGFloat,
-    color: UIColor
+    color: UIColor,
+    pulsePeriod: TimeInterval? = nil,
+    pulseActive: Bool = false
   ) -> SCNNode {
     let sphere = SCNSphere(radius: radius)
     sphere.firstMaterial?.diffuse.contents = color
@@ -450,7 +900,44 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
 
     let node = SCNNode(geometry: sphere)
     node.position = SCNVector3(point.x, point.y + Float(radius), point.z)
+    if pulseActive, let pulsePeriod {
+      applyHeartbeatAppearance(
+        to: node,
+        color: color,
+        period: pulsePeriod
+      )
+    }
     return node
+  }
+
+  private func applyHeartbeatAppearance(
+    to node: SCNNode,
+    color: UIColor,
+    period: TimeInterval
+  ) {
+    let clampedPeriod = max(0.28, min(2.2, period))
+    let time = CACurrentMediaTime().truncatingRemainder(dividingBy: clampedPeriod)
+    let phase = time / clampedPeriod
+
+    let pulse: Double
+    if phase < 0.18 {
+      pulse = phase / 0.18
+    } else if phase < 0.5 {
+      let local = (phase - 0.18) / 0.32
+      pulse = 1.0 - (local * 0.85)
+    } else {
+      let local = (phase - 0.5) / 0.5
+      pulse = 0.15 * (1.0 - local)
+    }
+
+    let scale = Float(1.0 + (0.32 * pulse))
+    node.scale = SCNVector3(scale, scale, scale)
+    node.opacity = CGFloat(0.82 + (0.18 * pulse))
+
+    if let material = node.geometry?.firstMaterial {
+      material.emission.contents = color.withAlphaComponent(CGFloat(0.22 + (0.68 * pulse)))
+      material.diffuse.contents = color.withAlphaComponent(CGFloat(0.84 + (0.16 * pulse)))
+    }
   }
 
   private func buildWaypointRingNode(
@@ -616,6 +1103,7 @@ private final class IOSSpatialAudioBridge: NSObject {
   private let environmentNode = AVAudioEnvironmentNode()
   private let eventPlayer = AVAudioPlayerNode()
   private let offRoutePlayer = AVAudioPlayerNode()
+  private var spatialInputFormat: AVAudioFormat?
   private var stereoPlayer: AVAudioPlayer?
   private var lookupAssetKey: ((String) -> String)?
   private var offRouteSide = "center"
@@ -623,11 +1111,52 @@ private final class IOSSpatialAudioBridge: NSObject {
   private var offRouteHeadingErrorDeg = 180.0
   private var relativeAngleDeg = 0.0
   private var sourceDistanceMeters = 2.0
-  private var activeBeaconAsset: String?
-  private var offRouteLoopBuffer: AVAudioPCMBuffer?
+  private var distanceToWaypointMeters = 6.0
   private var offRoutePulseTimer: Timer?
   private var isPrimedSilently = false
   private var isInitialized = false
+
+  func startProbe(relativeAngleDeg: Double, distanceMeters: Double) throws {
+    try ensureInitialized()
+    offRouteSeverity = 1.0
+    offRouteHeadingErrorDeg = max(12.0, abs(relativeAngleDeg))
+    self.relativeAngleDeg = relativeAngleDeg
+    self.sourceDistanceMeters = distanceMeters
+    self.distanceToWaypointMeters = 0.8
+    let position = directionalPosition(
+      relativeAngleDeg: relativeAngleDeg,
+      distanceMeters: distanceMeters
+    )
+    playAsset("assets/sounds/offroute_drum.wav", on: offRoutePlayer, position: position, volume: 0.92)
+  }
+
+  func updateProbe(relativeAngleDeg: Double, distanceMeters: Double) {
+    try? ensureInitialized()
+    offRouteSeverity = 1.0
+    offRouteHeadingErrorDeg = max(12.0, abs(relativeAngleDeg))
+    self.relativeAngleDeg = relativeAngleDeg
+    self.sourceDistanceMeters = distanceMeters
+    let position = directionalPosition(
+      relativeAngleDeg: relativeAngleDeg,
+      distanceMeters: distanceMeters
+    )
+    offRoutePlayer.position = position
+    if !offRoutePlayer.isPlaying {
+      playAsset("assets/sounds/offroute_drum.wav", on: offRoutePlayer, position: position, volume: 0.92)
+    }
+  }
+
+  func updateProbeListenerYawDegrees(_ yawDegrees: Double) {
+    environmentNode.listenerAngularOrientation = AVAudio3DAngularOrientation(
+      yaw: Float(-yawDegrees),
+      pitch: 0,
+      roll: 0
+    )
+  }
+
+  func stopProbe() {
+    stopOffRouteAlert()
+  }
 
   func register(with messenger: FlutterBinaryMessenger, registrar: FlutterPluginRegistrar) {
     lookupAssetKey = { asset in
@@ -675,12 +1204,15 @@ private final class IOSSpatialAudioBridge: NSObject {
           (args[SpatialAudioChannelContract.relativeAngleDegKey] as? NSNumber)?.doubleValue ?? 0
         let sourceDistanceMeters =
           (args[SpatialAudioChannelContract.sourceDistanceMetersKey] as? NSNumber)?.doubleValue ?? 2
+        let distanceToWaypointMeters =
+          (args[SpatialAudioChannelContract.distanceToWaypointMetersKey] as? NSNumber)?.doubleValue ?? 6
         self.updateOffRouteAlert(
           side: side,
           severity: severity,
           headingErrorDeg: headingErrorDeg,
           relativeAngleDeg: relativeAngleDeg,
-          sourceDistanceMeters: sourceDistanceMeters
+          sourceDistanceMeters: sourceDistanceMeters,
+          distanceToWaypointMeters: distanceToWaypointMeters
         )
         result(nil)
       case SpatialAudioChannelContract.primeOffRouteLoopMethod:
@@ -703,17 +1235,27 @@ private final class IOSSpatialAudioBridge: NSObject {
     try session.setCategory(
       .playback,
       mode: .default,
-      options: [.mixWithOthers, .allowBluetooth, .allowBluetoothA2DP]
+      options: [.mixWithOthers]
     )
+    try session.setPreferredSampleRate(48_000)
     try session.setActive(true)
+
+    let outputFormat = engine.outputNode.inputFormat(forBus: 0)
+    let inputFormat = AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: outputFormat.sampleRate,
+      channels: 1,
+      interleaved: false
+    )!
+    spatialInputFormat = inputFormat
 
     engine.attach(environmentNode)
     engine.attach(eventPlayer)
     engine.attach(offRoutePlayer)
 
-    engine.connect(eventPlayer, to: environmentNode, format: nil)
-    engine.connect(offRoutePlayer, to: environmentNode, format: nil)
-    engine.connect(environmentNode, to: engine.mainMixerNode, format: nil)
+    engine.connect(eventPlayer, to: environmentNode, format: inputFormat)
+    engine.connect(offRoutePlayer, to: environmentNode, format: inputFormat)
+    engine.connect(environmentNode, to: engine.mainMixerNode, format: outputFormat)
 
     eventPlayer.renderingAlgorithm = .HRTFHQ
     offRoutePlayer.renderingAlgorithm = .HRTFHQ
@@ -729,7 +1271,6 @@ private final class IOSSpatialAudioBridge: NSObject {
 
     engine.prepare()
     try engine.start()
-    primeSilentOffRouteLoop()
     isInitialized = true
   }
 
@@ -744,7 +1285,7 @@ private final class IOSSpatialAudioBridge: NSObject {
     case "arrived":
       playEventAsset("assets/sounds/waypoint_pass.wav", position: AVAudio3DPoint(x: 0, y: 0, z: -0.9))
     case "turnNow":
-      playEventAsset("assets/sounds/send.wav", position: AVAudio3DPoint(x: 0, y: 0, z: -1.0))
+      playEventAsset("assets/sounds/offroute_chime.wav", position: AVAudio3DPoint(x: 0, y: 0, z: -1.0))
     default:
       break
     }
@@ -755,7 +1296,8 @@ private final class IOSSpatialAudioBridge: NSObject {
     severity: Double,
     headingErrorDeg: Double,
     relativeAngleDeg: Double,
-    sourceDistanceMeters: Double
+    sourceDistanceMeters: Double,
+    distanceToWaypointMeters: Double
   ) {
     try? ensureInitialized()
     offRouteSide = side
@@ -763,6 +1305,7 @@ private final class IOSSpatialAudioBridge: NSObject {
     offRouteHeadingErrorDeg = headingErrorDeg
     self.relativeAngleDeg = relativeAngleDeg
     self.sourceDistanceMeters = sourceDistanceMeters
+    self.distanceToWaypointMeters = distanceToWaypointMeters
     ensureOffRoutePulseRunning()
   }
 
@@ -826,18 +1369,15 @@ private final class IOSSpatialAudioBridge: NSObject {
   }
 
   private func primeSilentOffRouteLoop() {
-    if isPrimedSilently { return }
-    playLoopingOffRouteAsset(
-      "assets/sounds/offroute_drum.wav",
-      position: AVAudio3DPoint(x: 0, y: 0, z: -2.0),
-      initialVolume: 0
-    )
-    activeBeaconAsset = "assets/sounds/offroute_drum.wav"
+    // Intentionally left as a no-op in the main app. The native HRTF probe
+    // proved spatial playback works, but the looping-buffer warmup path used
+    // here was crashing on scheduleBuffer(..., .loops) after localization.
+    // Main-app guidance now relies on single-shot HRTF pulses only.
     isPrimedSilently = true
   }
 
   private func continuousBeaconAsset() -> String {
-    if offRouteHeadingErrorDeg < 55 {
+    if offRouteHeadingErrorDeg < 18 {
       return "assets/sounds/offroute_chime.wav"
     }
 
@@ -848,17 +1388,17 @@ private final class IOSSpatialAudioBridge: NSObject {
     relativeAngleDeg: Double,
     distanceMeters: Double
   ) -> AVAudio3DPoint {
-    let clampedAngle = max(-75.0, min(75.0, relativeAngleDeg))
-    let theta = clampedAngle * .pi / 180.0
-    let distance = max(1.8, min(2.8, distanceMeters))
-    let x = Float(sin(theta) * distance)
+    let normalizedAngleDeg = ((relativeAngleDeg + 180).truncatingRemainder(dividingBy: 360)) - 180
+    let theta = normalizedAngleDeg * .pi / 180.0
+    let distance = max(0.8, min(6.0, distanceMeters))
+    let x = Float(-sin(theta) * distance)
     let z = Float(-cos(theta) * distance)
 
     return AVAudio3DPoint(x: x, y: 0.0, z: z)
   }
 
   private func playOffRoutePulse() {
-    guard offRouteSeverity > 0 || abs(offRouteHeadingErrorDeg) > 3 else {
+    guard abs(offRouteHeadingErrorDeg) <= 180 else {
       offRoutePulseTimer?.invalidate()
       offRoutePulseTimer = nil
       offRoutePlayer.stop()
@@ -866,9 +1406,10 @@ private final class IOSSpatialAudioBridge: NSObject {
     }
 
     let asset = continuousBeaconAsset()
+    let effectiveSourceDistance = min(sourceDistanceMeters, distanceToWaypointMeters, 6.0)
     let position = directionalPosition(
       relativeAngleDeg: relativeAngleDeg,
-      distanceMeters: sourceDistanceMeters
+      distanceMeters: effectiveSourceDistance
     )
     let volume = Float(lerp(0.22, 0.56, offRouteSeverity))
 
@@ -884,9 +1425,16 @@ private final class IOSSpatialAudioBridge: NSObject {
 
   private func guidancePulseInterval(headingErrorDeg: Double) -> TimeInterval {
     let minFrequencyHz = 0.5
-    let maxFrequencyHz = 2.0
+    let maxHeadingFrequencyHz = 2.0
+    let maxDistanceFrequencyHz = 3.4
     let normalizedAngle = max(0.0, min(1.0, abs(headingErrorDeg) / 180.0))
-    let frequencyHz = minFrequencyHz + ((maxFrequencyHz - minFrequencyHz) * normalizedAngle)
+    let headingFrequencyHz =
+      minFrequencyHz + ((maxHeadingFrequencyHz - minFrequencyHz) * normalizedAngle)
+    let normalizedDistance =
+      max(0.0, min(1.0, (6.0 - distanceToWaypointMeters) / (6.0 - 0.8)))
+    let distanceFrequencyHz =
+      minFrequencyHz + ((maxDistanceFrequencyHz - minFrequencyHz) * normalizedDistance)
+    let frequencyHz = max(headingFrequencyHz, distanceFrequencyHz)
     return 1.0 / frequencyHz
   }
 
@@ -899,58 +1447,83 @@ private final class IOSSpatialAudioBridge: NSObject {
     )
   }
 
-  private func playLoopingOffRouteAsset(
-    _ asset: String,
-    position: AVAudio3DPoint,
-    initialVolume: Float? = nil
-  ) {
-    guard let file = audioFile(for: asset) else { return }
-
-    let format = file.processingFormat
-    let frameCount = AVAudioFrameCount(file.length)
-    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-
-    do {
-      try file.read(into: buffer)
-      offRouteLoopBuffer = buffer
-      offRoutePlayer.stop()
-      offRoutePlayer.position = position
-      offRoutePlayer.volume = initialVolume ?? Float(lerp(0.22, 0.56, offRouteSeverity))
-      offRoutePlayer.scheduleBuffer(
-        offRouteLoopBuffer!,
-        at: nil,
-        options: .loops,
-        completionHandler: nil
-      )
-      offRoutePlayer.play()
-    } catch {
-      offRouteLoopBuffer = nil
-      return
-    }
-  }
-
   private func playAsset(
     _ asset: String,
     on player: AVAudioPlayerNode,
     position: AVAudio3DPoint,
     volume: Float
   ) {
-    guard let file = audioFile(for: asset) else { return }
+    guard
+      let file = audioFile(for: asset),
+      let targetFormat = spatialInputFormat,
+      let buffer = convertedPCMBuffer(from: file, to: targetFormat)
+    else { return }
 
-    let format = file.processingFormat
-    let frameCount = AVAudioFrameCount(file.length)
-    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+    player.stop()
+    player.position = position
+    player.volume = volume
+    player.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+    player.play()
+  }
+
+  private func convertedPCMBuffer(
+    from file: AVAudioFile,
+    to targetFormat: AVAudioFormat
+  ) -> AVAudioPCMBuffer? {
+    let sourceFormat = file.processingFormat
+    let sourceFrameCount = AVAudioFrameCount(file.length)
+
+    guard
+      let sourceBuffer = AVAudioPCMBuffer(
+        pcmFormat: sourceFormat,
+        frameCapacity: sourceFrameCount
+      )
+    else { return nil }
 
     do {
-      try file.read(into: buffer)
-      player.stop()
-      player.position = position
-      player.volume = volume
-      player.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-      player.play()
+      try file.read(into: sourceBuffer)
     } catch {
-      return
+      return nil
     }
+
+    if sourceFormat.channelCount == targetFormat.channelCount &&
+      sourceFormat.sampleRate == targetFormat.sampleRate &&
+      sourceFormat.commonFormat == targetFormat.commonFormat &&
+      sourceFormat.isInterleaved == targetFormat.isInterleaved {
+      return sourceBuffer
+    }
+
+    guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
+      return nil
+    }
+
+    let sampleRateRatio = targetFormat.sampleRate / sourceFormat.sampleRate
+    let estimatedFrameCapacity = AVAudioFrameCount(
+      ceil(Double(sourceBuffer.frameLength) * sampleRateRatio)
+    ) + 32
+
+    guard let convertedBuffer = AVAudioPCMBuffer(
+      pcmFormat: targetFormat,
+      frameCapacity: estimatedFrameCapacity
+    ) else { return nil }
+
+    var error: NSError?
+    var consumedSource = false
+    let status = converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
+      if consumedSource {
+        outStatus.pointee = .endOfStream
+        return nil
+      }
+      consumedSource = true
+      outStatus.pointee = .haveData
+      return sourceBuffer
+    }
+
+    guard status != .error, error == nil else {
+      return nil
+    }
+
+    return convertedBuffer
   }
 
   private func audioFile(for asset: String) -> AVAudioFile? {
@@ -959,19 +1532,18 @@ private final class IOSSpatialAudioBridge: NSObject {
   }
 
   private func resolvedAssetURL(for asset: String) -> URL? {
-    guard let key = lookupAssetKey?(asset) else { return nil }
-
-    if let resourceURL = Bundle.main.resourceURL {
-      let candidate = resourceURL.appendingPathComponent(key)
-      if FileManager.default.fileExists(atPath: candidate.path) {
-        return candidate
+    if let key = lookupAssetKey?(asset) {
+      if let resourceURL = Bundle.main.resourceURL {
+        let candidate = resourceURL.appendingPathComponent(key)
+        if FileManager.default.fileExists(atPath: candidate.path) {
+          return candidate
+        }
       }
-    }
-
-    if let bundleURL = Bundle.main.bundleURL as URL? {
-      let candidate = bundleURL.appendingPathComponent(key)
-      if FileManager.default.fileExists(atPath: candidate.path) {
-        return candidate
+      if let bundleURL = Bundle.main.bundleURL as URL? {
+        let candidate = bundleURL.appendingPathComponent(key)
+        if FileManager.default.fileExists(atPath: candidate.path) {
+          return candidate
+        }
       }
     }
 
@@ -982,6 +1554,19 @@ private final class IOSSpatialAudioBridge: NSObject {
         .appendingPathComponent(asset)
       if FileManager.default.fileExists(atPath: candidate.path) {
         return candidate
+      }
+    }
+
+    if let resourceURL = Bundle.main.resourceURL {
+      let enumerator = FileManager.default.enumerator(
+        at: resourceURL,
+        includingPropertiesForKeys: nil
+      )
+      let fileName = URL(fileURLWithPath: asset).lastPathComponent
+      while let candidate = enumerator?.nextObject() as? URL {
+        if candidate.lastPathComponent == fileName {
+          return candidate
+        }
       }
     }
 

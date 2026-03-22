@@ -71,9 +71,9 @@ class NavigationScreen extends StatefulWidget {
 
 class _NavigationScreenState extends State<NavigationScreen>
     with WidgetsBindingObserver {
-  static const double _headingLockThresholdDeg = 3.0;
-  static const double _spatialCueDistanceMeters = 2.0;
-  static const bool _enableSpatialAudioExperiment = false;
+  static const double _headingLockThresholdDeg = 8.0;
+  static const double _spatialCueDistanceMeters = 6.0;
+  static const bool _enableSpatialAudioExperiment = true;
   static const bool _enableDirectionalDrumStartupTest = false;
 
   // ---- Floorplan / path rendering state ----
@@ -88,8 +88,13 @@ class _NavigationScreenState extends State<NavigationScreen>
   String? _lastGuidanceCueSignature;
   String? _lastSpokenTrackingMessage;
   String? _lastSpokenTrackingEventSignature;
+  int? _lastDistanceAnnouncedWaypointIndex;
+  int? _lastDistanceCountdownMark;
   bool? _lastHeadingAligned;
+  bool _spatialAudioExperimentEnabled = _enableSpatialAudioExperiment;
+  bool _spatialAudioExperimentActivated = false;
   AudioOutputStatus _audioOutputStatus = const AudioOutputStatus.unknown();
+  DateTime? _lastAudioRouteCheckAt;
 
   // ---- Camera state ----
   CameraController? _cameraController;
@@ -131,7 +136,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
     _guidanceSoundService = GuidanceSoundService(
       preferredMode: _enableSpatialAudioExperiment && Platform.isIOS
-          ? GuidanceAudioMode.spatial
+          ? GuidanceAudioMode.auto
           : GuidanceAudioMode.stereo,
     );
 
@@ -190,6 +195,7 @@ class _NavigationScreenState extends State<NavigationScreen>
         headingErrorDeg: 90,
         relativeAngleDeg: 45,
         sourceDistanceMeters: _spatialCueDistanceMeters,
+        distanceToWaypointMeters: 2.0,
       );
     }
   }
@@ -439,9 +445,12 @@ class _NavigationScreenState extends State<NavigationScreen>
       TTSService.speakSequentially(processingResult.speechTexts);
     }
 
+    _lastDistanceAnnouncedWaypointIndex = null;
+    _lastDistanceCountdownMark = null;
     setState(() {
       _currentPath = processingResult.session.trackedPath;
     });
+    _maybeSpeakDistanceAnnouncement(processingResult.session);
     _playGuidanceCueIfNeeded(processingResult.session);
     unawaited(_syncArOverlay(processingResult.session));
 
@@ -482,6 +491,20 @@ class _NavigationScreenState extends State<NavigationScreen>
       _currentPath = session.trackedPath;
     });
 
+    final now = DateTime.now();
+    if (_lastAudioRouteCheckAt == null ||
+        now.difference(_lastAudioRouteCheckAt!) >= const Duration(seconds: 1)) {
+      _lastAudioRouteCheckAt = now;
+      unawaited(_reconcileAudioOutputRouting(session));
+    }
+
+    if (!_spatialAudioExperimentActivated) {
+      Future<void>.delayed(const Duration(milliseconds: 500), () {
+        if (!mounted) return;
+        unawaited(_maybeActivateSpatialAudioForSession(_navigationController.session));
+      });
+    }
+    _maybeSpeakDistanceAnnouncement(session);
     _playGuidanceCueIfNeeded(session);
     unawaited(_syncArOverlay(session));
 
@@ -516,6 +539,45 @@ class _NavigationScreenState extends State<NavigationScreen>
     });
   }
 
+  void _maybeSpeakDistanceAnnouncement(NavigationSession session) {
+    if (session.trackingState == TrackingState.arrived ||
+        session.trackingState == TrackingState.offRoute) {
+      return;
+    }
+    final route = session.route;
+    if (route == null || route.points.isEmpty) return;
+    final waypointIndex = session.nextWaypointIndex.clamp(0, route.points.length - 1);
+    if (_lastDistanceAnnouncedWaypointIndex != waypointIndex) {
+      _lastDistanceAnnouncedWaypointIndex = waypointIndex;
+      _lastDistanceCountdownMark = null;
+    }
+
+    final distanceMeters = _distanceToNextWaypointMeters(session);
+    if (distanceMeters > 5.0) {
+      _lastDistanceCountdownMark = null;
+      return;
+    }
+
+    final countdownMark = _nextDistanceCountdownMark(distanceMeters);
+    if (countdownMark == null || countdownMark == _lastDistanceCountdownMark) {
+      return;
+    }
+
+    final msg = _buildDistanceAnnouncement(
+      distanceMeters,
+      countdownMark: countdownMark,
+    );
+    if (msg == null || msg.isEmpty) return;
+    _lastDistanceCountdownMark = countdownMark;
+    _speechDebounceTimer?.cancel();
+    _speechDebounceTimer = Timer(const Duration(milliseconds: 50), () async {
+      await TTSService.setLanguage(
+        context.read<SettingsProvider>().languageCode,
+      );
+      await TTSService.speak(msg);
+    });
+  }
+
   void _playGuidanceCueIfNeeded(NavigationSession session) {
     final headingErrorDeg = _headingErrorToNextWaypoint(session);
     final relativeAngleDeg = _signedHeadingDeltaToNextWaypoint(session);
@@ -523,9 +585,9 @@ class _NavigationScreenState extends State<NavigationScreen>
     final headingAligned = headingErrorDeg <= _headingLockThresholdDeg;
     _emitHeadingLatchHapticIfNeeded(headingAligned);
 
+    final hasNextWaypointTarget = session.trackedPath.length >= 2;
     final isDirectionalGuidanceActive =
-        session.trackingState == TrackingState.offRoute ||
-        headingErrorDeg > _headingLockThresholdDeg;
+        hasNextWaypointTarget && session.trackingState != TrackingState.arrived;
     final guidanceSeverity = session.trackingState == TrackingState.offRoute
         ? session.offRouteSeverity.clamp(0.35, 1.0)
         : _normalizedHeadingSeverity(headingErrorDeg);
@@ -540,6 +602,7 @@ class _NavigationScreenState extends State<NavigationScreen>
       headingErrorDeg: headingErrorDeg,
       relativeAngleDeg: relativeAngleDeg,
       sourceDistanceMeters: _spatialCueDistanceMeters,
+      distanceToWaypointMeters: _distanceToNextWaypointMeters(session),
     );
 
     final eventType = session.latestGuidanceEventType;
@@ -557,6 +620,67 @@ class _NavigationScreenState extends State<NavigationScreen>
     if (_lastGuidanceCueSignature == cueSignature) return;
     _lastGuidanceCueSignature = cueSignature;
     unawaited(_guidanceSoundService.playCue(eventType));
+  }
+
+  Future<void> _toggleSpatialAudioExperiment() async {
+    final nextValue = !_spatialAudioExperimentEnabled;
+    setState(() {
+      _spatialAudioExperimentEnabled = nextValue;
+    });
+
+    if (!nextValue) {
+      _spatialAudioExperimentActivated = false;
+      await _guidanceSoundService.disableSpatial();
+      await _refreshAudioOutputStatus();
+      return;
+    }
+
+    await _maybeActivateSpatialAudioForSession(_navigationController.session);
+  }
+
+  Future<void> _maybeActivateSpatialAudioForSession(NavigationSession session) async {
+    if (!_spatialAudioExperimentEnabled || !Platform.isIOS) return;
+    if (_spatialAudioExperimentActivated) return;
+    if (session.route == null || session.currentPose == null) return;
+    if (session.trackingState == TrackingState.idle ||
+        session.trackingState == TrackingState.localizing) {
+      return;
+    }
+
+    final enabled = await _guidanceSoundService.enableSpatial();
+    if (!mounted) return;
+    if (enabled) {
+      _spatialAudioExperimentActivated = true;
+      await _guidanceSoundService.primeDirectionalGuidance();
+    }
+    await _refreshAudioOutputStatus();
+  }
+
+  Future<void> _reconcileAudioOutputRouting(NavigationSession session) async {
+    await _refreshAudioOutputStatus();
+    if (!mounted || !Platform.isIOS) return;
+
+    final shouldUseSpatial = _spatialAudioExperimentEnabled &&
+        _audioOutputStatus.supportsSpatial &&
+        _audioOutputStatus.hasHeadphonesConnected &&
+        !_audioOutputStatus.isMonoAudioEnabled &&
+        session.route != null &&
+        session.currentPose != null &&
+        session.trackingState != TrackingState.idle &&
+        session.trackingState != TrackingState.localizing;
+
+    if (shouldUseSpatial) {
+      if (!_spatialAudioExperimentActivated) {
+        await _maybeActivateSpatialAudioForSession(session);
+      }
+      return;
+    }
+
+    if (_spatialAudioExperimentActivated) {
+      _spatialAudioExperimentActivated = false;
+      await _guidanceSoundService.disableSpatial();
+      await _refreshAudioOutputStatus();
+    }
   }
 
   void _emitHeadingLatchHapticIfNeeded(bool headingAligned) {
@@ -641,6 +765,86 @@ class _NavigationScreenState extends State<NavigationScreen>
     return normalized.clamp(0.0, 1.0);
   }
 
+  double _guidancePulseIntervalSeconds({
+    required double headingErrorDeg,
+    required double distanceToWaypointMeters,
+  }) {
+    const minFrequencyHz = 0.5;
+    const maxHeadingFrequencyHz = 2.0;
+    const maxDistanceFrequencyHz = 3.4;
+    final normalizedAngle = (headingErrorDeg.abs() / 180.0).clamp(0.0, 1.0);
+    final headingFrequencyHz =
+        minFrequencyHz +
+        ((maxHeadingFrequencyHz - minFrequencyHz) * normalizedAngle);
+    final normalizedDistance =
+        ((6.0 - distanceToWaypointMeters) / (6.0 - 0.8)).clamp(0.0, 1.0);
+    final distanceFrequencyHz =
+        minFrequencyHz +
+        ((maxDistanceFrequencyHz - minFrequencyHz) * normalizedDistance);
+    final frequencyHz = math.max(headingFrequencyHz, distanceFrequencyHz);
+    return 1.0 / frequencyHz;
+  }
+
+  double _distanceToNextWaypointMeters(NavigationSession session) {
+    final metersPerPixel = _navigationController.metersPerPixel;
+    if (metersPerPixel == null || metersPerPixel <= 0) {
+      return session.distanceToNextWaypointPx;
+    }
+    return session.distanceToNextWaypointPx * metersPerPixel;
+  }
+
+  int? _nextDistanceCountdownMark(double distanceMeters) {
+    if (distanceMeters > 5.0) return null;
+    if (distanceMeters <= 1.0) return 1;
+    if (distanceMeters <= 2.0) return 2;
+    if (distanceMeters <= 3.0) return 3;
+    if (distanceMeters <= 4.0) return 4;
+    return 5;
+  }
+
+  String? _buildDistanceAnnouncement(
+    double distanceMeters, {
+    required int countdownMark,
+  }) {
+    final settings = context.read<SettingsProvider>();
+    final lang = settings.languageCode;
+    if (countdownMark < 5) {
+      return countdownMark.toString();
+    }
+    if (settings.unit == 'feet') {
+      final distanceFeet = distanceMeters * 3.28084;
+      final roundedFeet = _formatSpokenDistanceValue(
+        distanceFeet,
+        integerThreshold: 10,
+      );
+      if (lang == 'zh') return '前方 $roundedFeet 英尺。';
+      if (lang == 'th') return 'ข้างหน้า $roundedFeet ฟุต';
+      return '$roundedFeet feet ahead.';
+    }
+
+    final roundedMeters = _formatSpokenDistanceValue(
+      distanceMeters,
+      integerThreshold: 10,
+    );
+    if (lang == 'zh') return '前方 $roundedMeters 米。';
+    if (lang == 'th') return 'ข้างหน้า $roundedMeters เมตร';
+    return '$roundedMeters meters ahead.';
+  }
+
+  String _formatSpokenDistanceValue(
+    double value, {
+    required double integerThreshold,
+  }) {
+    final rounded = value.roundToDouble();
+    if ((value - rounded).abs() < 0.05) {
+      return rounded.toInt().toString();
+    }
+    if (value >= integerThreshold) {
+      return value.round().toString();
+    }
+    return value.toStringAsFixed(1);
+  }
+
   double _normalizeDegrees(double value) {
     var normalized = value % 360;
     if (normalized < 0) {
@@ -714,6 +918,14 @@ class _NavigationScreenState extends State<NavigationScreen>
           ArChannelContract.destinationKey: encodePoint(
             snapshot.destinationWorldPoint,
           ),
+          ArChannelContract.waypointPulseActiveKey:
+              session.trackingState != TrackingState.arrived &&
+              snapshot.nextWaypointWorldPoint != null,
+          ArChannelContract.waypointPulsePeriodSecKey:
+              _guidancePulseIntervalSeconds(
+                headingErrorDeg: _headingErrorToNextWaypoint(session),
+                distanceToWaypointMeters: _distanceToNextWaypointMeters(session),
+              ),
         },
       );
     } catch (_) {}
@@ -836,15 +1048,19 @@ class _NavigationScreenState extends State<NavigationScreen>
           'Mono Audio is on. Turn it off in Accessibility > Audio & Visual for spatial cues.';
       background = Colors.orange.withValues(alpha: 0.92);
       foreground = Colors.black;
-    } else if (_enableSpatialAudioExperiment &&
+    } else if (_spatialAudioExperimentEnabled &&
         !_audioOutputStatus.hasHeadphonesConnected) {
       message =
           'Spatial cues work best with headphones or AirPods. Current output is using stereo fallback.';
-    } else if (_enableSpatialAudioExperiment &&
+    } else if (_spatialAudioExperimentEnabled &&
         _audioOutputStatus.supportsSpatial) {
-      message =
-          'Spatial guidance active: cues are placed toward the next waypoint.';
+      message = _spatialAudioExperimentActivated
+          ? 'Spatial guidance active: cues are placed toward the next waypoint.'
+          : 'Spatial guidance armed. Start tracking to activate HRTF cues.';
       background = Colors.teal.withValues(alpha: 0.86);
+    } else if (!_spatialAudioExperimentEnabled &&
+        _audioOutputStatus.supportsSpatial) {
+      message = 'Spatial guidance available. It will activate automatically when tracking starts.';
     }
 
     if (message == null) return null;

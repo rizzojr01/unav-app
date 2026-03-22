@@ -40,6 +40,7 @@ class GuidanceSoundService {
   late final _GuidanceAudioRenderer _stereoRenderer;
   late final _MethodChannelSpatialAudioRenderer _spatialRenderer;
   _GuidanceAudioRenderer? _activeRenderer;
+  _DirectionalGuidanceState _lastDirectionalState = const _DirectionalGuidanceState.inactive();
 
   GuidanceSoundService({
     this.preferredMode = GuidanceAudioMode.auto,
@@ -57,16 +58,9 @@ class GuidanceSoundService {
     await _stereoRenderer.init();
     _activeRenderer = _stereoRenderer;
 
-    if (preferredMode == GuidanceAudioMode.stereo) return;
-
-    final supportsSpatial = await _spatialRenderer.canUseSpatialAudio();
-    if (!supportsSpatial) {
-      await _spatialRenderer.dispose();
-      return;
+    if (preferredMode == GuidanceAudioMode.spatial) {
+      await enableSpatial();
     }
-
-    await _spatialRenderer.init();
-    _activeRenderer = _spatialRenderer;
   }
 
   Future<void> dispose() async {
@@ -80,6 +74,43 @@ class GuidanceSoundService {
     await (_activeRenderer ?? _stereoRenderer).primeDirectionalGuidance();
   }
 
+  bool get isUsingSpatialRenderer => identical(_activeRenderer, _spatialRenderer);
+
+  Future<bool> enableSpatial() async {
+    if (isUsingSpatialRenderer) return true;
+    _stereoRenderer.updateDirectionalGuidance(
+      isActive: false,
+      severity: 0,
+      direction: AudioCueDirection.center,
+      headingErrorDeg: 180,
+      relativeAngleDeg: 0,
+      sourceDistanceMeters: 6,
+      distanceToWaypointMeters: 6,
+    );
+    final supportsSpatial = await _spatialRenderer.canUseSpatialAudio();
+    if (!supportsSpatial) return false;
+    await _spatialRenderer.init();
+    _activeRenderer = _spatialRenderer;
+    _applyDirectionalStateToActiveRenderer();
+    return true;
+  }
+
+  Future<void> disableSpatial() async {
+    if (!isUsingSpatialRenderer) return;
+    _spatialRenderer.updateDirectionalGuidance(
+      isActive: false,
+      severity: 0,
+      direction: AudioCueDirection.center,
+      headingErrorDeg: 180,
+      relativeAngleDeg: 0,
+      sourceDistanceMeters: 6,
+      distanceToWaypointMeters: 6,
+    );
+    await _spatialRenderer.dispose();
+    _activeRenderer = _stereoRenderer;
+    _applyDirectionalStateToActiveRenderer();
+  }
+
   void updateDirectionalGuidance({
     required bool isActive,
     required double severity,
@@ -87,7 +118,17 @@ class GuidanceSoundService {
     required double headingErrorDeg,
     required double relativeAngleDeg,
     required double sourceDistanceMeters,
+    required double distanceToWaypointMeters,
   }) {
+    _lastDirectionalState = _DirectionalGuidanceState(
+      isActive: isActive,
+      severity: severity,
+      direction: direction,
+      headingErrorDeg: headingErrorDeg,
+      relativeAngleDeg: relativeAngleDeg,
+      sourceDistanceMeters: sourceDistanceMeters,
+      distanceToWaypointMeters: distanceToWaypointMeters,
+    );
     (_activeRenderer ?? _stereoRenderer).updateDirectionalGuidance(
       isActive: isActive,
       severity: severity,
@@ -95,6 +136,20 @@ class GuidanceSoundService {
       headingErrorDeg: headingErrorDeg,
       relativeAngleDeg: relativeAngleDeg,
       sourceDistanceMeters: sourceDistanceMeters,
+      distanceToWaypointMeters: distanceToWaypointMeters,
+    );
+  }
+
+  void _applyDirectionalStateToActiveRenderer() {
+    final renderer = _activeRenderer ?? _stereoRenderer;
+    renderer.updateDirectionalGuidance(
+      isActive: _lastDirectionalState.isActive,
+      severity: _lastDirectionalState.severity,
+      direction: _lastDirectionalState.direction,
+      headingErrorDeg: _lastDirectionalState.headingErrorDeg,
+      relativeAngleDeg: _lastDirectionalState.relativeAngleDeg,
+      sourceDistanceMeters: _lastDirectionalState.sourceDistanceMeters,
+      distanceToWaypointMeters: _lastDirectionalState.distanceToWaypointMeters,
     );
   }
 
@@ -121,20 +176,17 @@ abstract class _GuidanceAudioRenderer {
     required double headingErrorDeg,
     required double relativeAngleDeg,
     required double sourceDistanceMeters,
+    required double distanceToWaypointMeters,
   });
 }
 
 class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
-  static final AssetSource _defaultCueAsset = AssetSource('sounds/send.wav');
-  static final AssetSource _offRouteChimeAsset =
-      AssetSource('sounds/offroute_chime.wav');
   static final AssetSource _offRouteChimeLeftAsset =
       AssetSource('sounds/offroute_chime_left.wav');
   static final AssetSource _offRouteChimeRightAsset =
       AssetSource('sounds/offroute_chime_right.wav');
   static final AssetSource _offRouteChimeCenterAsset =
       AssetSource('sounds/offroute_chime_center.wav');
-  static final AssetSource _offRouteDrumAsset = AssetSource('sounds/offroute_drum.wav');
   static final AssetSource _offRouteDrumLeftAsset =
       AssetSource('sounds/offroute_drum_left.wav');
   static final AssetSource _offRouteDrumRightAsset =
@@ -143,6 +195,9 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
       AssetSource('sounds/offroute_drum_center.wav');
   static final AssetSource _waypointPassAsset = AssetSource('sounds/waypoint_pass.wav');
   static final AssetSource _waypointErrorAsset = AssetSource('sounds/waypoint_error.wav');
+  static const double _chimeFocusThresholdDeg = 8.0;
+  static const double _distanceTempoNearMeters = 0.8;
+  static const double _distanceTempoFarMeters = 6.0;
 
   final AudioPlayer _eventPlayer;
   final AudioPlayer _offRoutePlayer;
@@ -151,6 +206,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
   AudioCueDirection _guidanceDirection = AudioCueDirection.center;
   double _guidanceHeadingErrorDeg = 180;
   double _guidanceRelativeAngleDeg = 0;
+  double _distanceToWaypointMeters = _distanceTempoFarMeters;
   bool _guidanceToneActive = false;
 
   _StereoGuidanceAudioRenderer({AudioPlayer? eventPlayer, AudioPlayer? offRoutePlayer})
@@ -185,6 +241,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     required double headingErrorDeg,
     required double relativeAngleDeg,
     required double sourceDistanceMeters,
+    required double distanceToWaypointMeters,
   }) {
     if (!isActive) {
       _stopDirectionalGuidance();
@@ -195,6 +252,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     _guidanceDirection = direction;
     _guidanceHeadingErrorDeg = headingErrorDeg;
     _guidanceRelativeAngleDeg = relativeAngleDeg;
+    _distanceToWaypointMeters = distanceToWaypointMeters;
 
     if (_guidanceToneActive) {
       return;
@@ -211,11 +269,23 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
           _CueStep(
             asset: _waypointPassAsset,
             balance: 0,
-            rate: 1.00,
-            volume: 0.92,
+            rate: 1.06,
+            volume: 0.88,
             haptic: _CueHaptic.light,
           ),
-        ]);
+          _CueStep(
+            asset: _waypointPassAsset,
+            balance: 0,
+            rate: 1.18,
+            volume: 0.98,
+          ),
+          _CueStep(
+            asset: _waypointPassAsset,
+            balance: 0,
+            rate: 1.32,
+            volume: 1.0,
+          ),
+        ], gap: const Duration(milliseconds: 120));
         return;
       case GuidanceEventType.waypointRegressed:
         await _playPattern([
@@ -237,26 +307,26 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
       case GuidanceEventType.approachingWaypoint:
         await _playPattern([
           _CueStep(
-            asset: _defaultCueAsset,
+            asset: _offRouteChimeCenterAsset,
             balance: 0,
-            rate: 1.22,
-            volume: 0.42,
+            rate: 1.04,
+            volume: 0.36,
           ),
         ]);
         return;
       case GuidanceEventType.turnNow:
         await _playPattern([
           _CueStep(
-            asset: _defaultCueAsset,
+            asset: _offRouteChimeCenterAsset,
             balance: 0,
-            rate: 1.12,
+            rate: 1.06,
             volume: 0.66,
             haptic: _CueHaptic.medium,
           ),
           _CueStep(
-            asset: _defaultCueAsset,
+            asset: _waypointPassAsset,
             balance: 0,
-            rate: 1.28,
+            rate: 1.12,
             volume: 0.76,
           ),
         ], gap: const Duration(milliseconds: 90));
@@ -324,7 +394,10 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     await _playGuidancePulse(severity);
     if (!_guidanceToneActive) return;
 
-    final intervalMs = _guidanceIntervalMsForHeadingError(_guidanceHeadingErrorDeg);
+    final intervalMs = _guidanceIntervalMs(
+      headingErrorDeg: _guidanceHeadingErrorDeg,
+      distanceToWaypointMeters: _distanceToWaypointMeters,
+    );
     _guidanceTimer?.cancel();
     _guidanceTimer = Timer(Duration(milliseconds: intervalMs), () {
       unawaited(_scheduleNextGuidancePulse());
@@ -332,7 +405,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
   }
 
   Future<void> _playGuidancePulse(double severity) async {
-    final useChime = _guidanceHeadingErrorDeg < 40;
+    final useChime = _guidanceHeadingErrorDeg < _chimeFocusThresholdDeg;
     final rate = useChime
         ? _lerpDouble(0.98, 1.04, severity)
         : _lerpDouble(0.92, 1.00, severity);
@@ -366,6 +439,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     _guidanceDirection = AudioCueDirection.center;
     _guidanceHeadingErrorDeg = 180;
     _guidanceRelativeAngleDeg = 0;
+    _distanceToWaypointMeters = _distanceTempoFarMeters;
     _guidanceTimer?.cancel();
     _guidanceTimer = null;
     unawaited(_offRoutePlayer.stop());
@@ -380,50 +454,44 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
     final signedPan = math.sin(theta);
     final lateralStrength = signedPan.abs();
     final eased = lateralStrength * lateralStrength * (3 - (2 * lateralStrength));
-    final panFromAngle = signedPan * _lerpDouble(0.04, 0.52, eased);
+    final panFromAngle = signedPan * _lerpDouble(0.0, 1.0, eased);
 
     if (panFromAngle.abs() > 0.01) {
-      return panFromAngle.clamp(-0.52, 0.52);
+      return panFromAngle.clamp(-1.0, 1.0);
     }
 
-    return switch (direction) {
-      AudioCueDirection.left => -0.10,
-      AudioCueDirection.right => 0.10,
-      AudioCueDirection.center => 0.0,
-    };
+    return 0.0;
   }
 
   AssetSource _selectGuidanceAsset({
     required double headingErrorDeg,
     required AudioCueDirection direction,
   }) {
-    final useChime = headingErrorDeg < 55;
-    final normalizedDeg = (((_guidanceRelativeAngleDeg + 180) % 360) - 180).toDouble();
-    final lateralStrength = math.sin(normalizedDeg * math.pi / 180.0).abs();
-    final isNearCenter = lateralStrength <= 0.22;
+    final useChime = headingErrorDeg < (_chimeFocusThresholdDeg + 4);
     if (useChime) {
-      if (isNearCenter) return _offRouteChimeCenterAsset;
-      return switch (direction) {
-        AudioCueDirection.left => _offRouteChimeLeftAsset,
-        AudioCueDirection.right => _offRouteChimeRightAsset,
-        AudioCueDirection.center => _offRouteChimeCenterAsset,
-      };
+      return _offRouteChimeCenterAsset;
     }
 
-    if (isNearCenter) return _offRouteDrumCenterAsset;
-    return switch (direction) {
-      AudioCueDirection.left => _offRouteDrumLeftAsset,
-      AudioCueDirection.right => _offRouteDrumRightAsset,
-      AudioCueDirection.center => _offRouteDrumCenterAsset,
-    };
+    return _offRouteDrumCenterAsset;
   }
 
-  int _guidanceIntervalMsForHeadingError(double headingErrorDeg) {
+  int _guidanceIntervalMs({
+    required double headingErrorDeg,
+    required double distanceToWaypointMeters,
+  }) {
     const minFrequencyHz = 0.5;
-    const maxFrequencyHz = 2.0;
+    const maxHeadingFrequencyHz = 2.0;
+    const maxDistanceFrequencyHz = 3.4;
     final normalizedAngle = (headingErrorDeg.abs() / 180.0).clamp(0.0, 1.0);
-    final frequencyHz =
-        minFrequencyHz + ((maxFrequencyHz - minFrequencyHz) * normalizedAngle);
+    final headingFrequencyHz = minFrequencyHz +
+        ((maxHeadingFrequencyHz - minFrequencyHz) * normalizedAngle);
+    final normalizedDistance =
+        ((_distanceTempoFarMeters - distanceToWaypointMeters) /
+                (_distanceTempoFarMeters - _distanceTempoNearMeters))
+            .clamp(0.0, 1.0);
+    final distanceFrequencyHz = minFrequencyHz +
+        ((maxDistanceFrequencyHz - minFrequencyHz) * normalizedDistance);
+    final frequencyHz = math.max(headingFrequencyHz, distanceFrequencyHz);
     return (1000.0 / frequencyHz).round();
   }
 
@@ -490,6 +558,7 @@ class _MethodChannelSpatialAudioRenderer implements _GuidanceAudioRenderer {
     try {
       await _channel.invokeMethod<void>(SpatialAudioChannelContract.stopOffRouteAlertMethod);
     } catch (_) {}
+    _initialized = false;
   }
 
   @override
@@ -523,6 +592,7 @@ class _MethodChannelSpatialAudioRenderer implements _GuidanceAudioRenderer {
     required double headingErrorDeg,
     required double relativeAngleDeg,
     required double sourceDistanceMeters,
+    required double distanceToWaypointMeters,
   }) {
     if (!_initialized) return;
     if (!isActive) {
@@ -538,6 +608,7 @@ class _MethodChannelSpatialAudioRenderer implements _GuidanceAudioRenderer {
           SpatialAudioChannelContract.headingErrorDegKey: headingErrorDeg,
           SpatialAudioChannelContract.relativeAngleDegKey: relativeAngleDeg,
           SpatialAudioChannelContract.sourceDistanceMetersKey: sourceDistanceMeters,
+          SpatialAudioChannelContract.distanceToWaypointMetersKey: distanceToWaypointMeters,
         },
       ),
     );
@@ -565,4 +636,33 @@ enum _CueHaptic {
   light,
   medium,
   heavy,
+}
+
+class _DirectionalGuidanceState {
+  final bool isActive;
+  final double severity;
+  final AudioCueDirection direction;
+  final double headingErrorDeg;
+  final double relativeAngleDeg;
+  final double sourceDistanceMeters;
+  final double distanceToWaypointMeters;
+
+  const _DirectionalGuidanceState({
+    required this.isActive,
+    required this.severity,
+    required this.direction,
+    required this.headingErrorDeg,
+    required this.relativeAngleDeg,
+    required this.sourceDistanceMeters,
+    required this.distanceToWaypointMeters,
+  });
+
+  const _DirectionalGuidanceState.inactive()
+      : isActive = false,
+        severity = 0,
+        direction = AudioCueDirection.center,
+        headingErrorDeg = 180,
+        relativeAngleDeg = 0,
+        sourceDistanceMeters = 6,
+        distanceToWaypointMeters = 6;
 }

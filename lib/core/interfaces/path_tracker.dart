@@ -6,5 +6,6 @@ abstract class PathTracker {
   TrackingUpdate update({
     required NavigationSession session,
     required NavigationRoute route,
+    double? metersPerPixel,
   });
 }

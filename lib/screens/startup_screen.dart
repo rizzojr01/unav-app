@@ -14,7 +14,7 @@ import '../api/api_service.dart';
 import '../providers/settings_provider.dart';
 import '../services/server_address_service.dart';
 import '../widgets/server_selector.dart';
-import 'place_select_screen.dart';
+import 'navigation_mode_screen.dart';
 
 /// StartupScreen
 /// - Login / Register
@@ -465,7 +465,10 @@ class _StartupScreenState extends State<StartupScreen> {
     await ApiService.setAnnounceLocation(provider.announceCurrentLocation);
     await provider.setLoggedIn(true);
     if (context.mounted) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectScreen()));
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const NavigationModeScreen()),
+      );
     }
   }
 

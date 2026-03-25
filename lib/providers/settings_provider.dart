@@ -191,7 +191,38 @@ class SettingsProvider extends ChangeNotifier {
         prefs.getBool('saved_announce_location') ?? false;
 
     await loadAvatar();
+    _useDebugImage = prefs.getBool('use_debug_image') ?? false;
+    _debugAssetPath = prefs.getString('debug_asset_path');
     notifyListeners();
+  }
+
+  // --- Debug Image (persistent) ---
+  bool _useDebugImage = false;
+  String? _debugAssetPath;
+
+  bool get useDebugImage => _useDebugImage;
+  String? get debugAssetPath => _debugAssetPath;
+
+  Future<void> setDebugImageEnabled(bool enabled) async {
+    if (_useDebugImage != enabled) {
+      _useDebugImage = enabled;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('use_debug_image', enabled);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setDebugAssetPath(String? path) async {
+    if (_debugAssetPath != path) {
+      _debugAssetPath = path;
+      final prefs = await SharedPreferences.getInstance();
+      if (path != null) {
+        await prefs.setString('debug_asset_path', path);
+      } else {
+        await prefs.remove('debug_asset_path');
+      }
+      notifyListeners();
+    }
   }
 
   /// Saves the user profile (email, nickname, avatarUrl) to persistent storage.
@@ -238,6 +269,8 @@ class SettingsProvider extends ChangeNotifier {
     await prefs.remove('saved_language');
     await prefs.remove('saved_turn_mode');
     await prefs.remove('saved_announce_location');
+    await prefs.remove('use_debug_image');
+    await prefs.remove('debug_asset_path');
     await clearAvatar();
 
     _email = null;
@@ -248,6 +281,8 @@ class SettingsProvider extends ChangeNotifier {
     _unit = 'feet';
     _turnMode = 'default';
     _announceCurrentLocation = false;
+    _useDebugImage = false;
+    _debugAssetPath = null;
 
     notifyListeners();
   }

@@ -1,10 +1,10 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../screens/debug_image_screen.dart';
 
-/// A premium compass widget that visualizes the current heading orientation.
-/// Includes degree display and a stylized arrow with compass markings.
+/// A minimalist compass widget that displays orientation in Degrees.
 class SimpleCompass extends StatelessWidget {
-  final double heading; // in degrees
+  final double heading; // Raw value in degrees received from the backend
   final double size;
 
   const SimpleCompass({super.key, required this.heading, this.size = 72});
@@ -12,17 +12,22 @@ class SimpleCompass extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const primaryColor = Colors.green;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // Real-time degree display
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            border: Border.all(color: primaryColor.withOpacity(0.5)),
-          ),
-          child: Text(
-            '${heading.toStringAsFixed(1)}°',
+
+    // Use the raw heading as Degrees
+    final double displayedDegrees = heading;
+
+    return GestureDetector(
+      onDoubleTap: () {
+        Navigator.of(
+          context,
+        ).push(MaterialPageRoute(builder: (_) => const DebugImageScreen()));
+      },
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Digits Display
+          Text(
+            '${displayedDegrees.toStringAsFixed(1)}°',
             style: const TextStyle(
               color: primaryColor,
               fontSize: 16,
@@ -30,46 +35,48 @@ class SimpleCompass extends StatelessWidget {
               fontFamily: 'Courier',
             ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.transparent,
-            border: Border.all(
-              color: primaryColor.withOpacity(0.8),
-              width: 1.5,
+          const SizedBox(height: 8),
+
+          // The Compass Dial
+          Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.transparent,
+              border: Border.all(
+                color: primaryColor.withOpacity(0.8),
+                width: 1.5,
+              ),
             ),
-          ),
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              // Decorative Inner Ring
-              Container(
-                margin: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: primaryColor.withValues(alpha: 0.1),
-                    width: 1,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Decorative Inner Ring
+                Container(
+                  margin: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: primaryColor.withOpacity(0.1),
+                      width: 1,
+                    ),
                   ),
                 ),
-              ),
 
-              // The Arrow (Rotating)
-              Transform.rotate(
-                angle: heading * math.pi / 180,
-                child: CustomPaint(
-                  size: Size(size * 0.7, size * 0.7),
-                  painter: _CompassArrowPainter(color: primaryColor),
+                // The Arrow (Rotating based on the degrees, with 0 pointing East)
+                Transform.rotate(
+                  angle: (displayedDegrees * math.pi / 180) + (math.pi / 2),
+                  child: CustomPaint(
+                    size: Size(size * 0.7, size * 0.7),
+                    painter: _CompassArrowPainter(color: primaryColor),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -82,7 +89,7 @@ class _CompassArrowPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
 
-    // Redesigned Arrow (Green with white outline)
+    // Arrow Path (Sharp edges, minimalist)
     final paint = Paint()
       ..color = color
       ..style = PaintingStyle.fill;
@@ -93,7 +100,6 @@ class _CompassArrowPainter extends CustomPainter {
       ..strokeWidth = 1.0;
 
     final path = Path();
-    // Generalized coordinates following M50 15 L35 75 L50 65 L65 75 Z
     path.moveTo(size.width * 0.5, size.height * 0.1);
     path.lineTo(size.width * 0.3, size.height * 0.8);
     path.lineTo(size.width * 0.5, size.height * 0.7);
@@ -103,14 +109,14 @@ class _CompassArrowPainter extends CustomPainter {
     canvas.drawPath(path, paint);
     canvas.drawPath(path, strokePaint);
 
-    // Small center dot (Matching primary color)
+    // Small center dot
     final corePaint = Paint()
       ..color = color
       ..style = PaintingStyle.fill;
 
     canvas.drawCircle(center, size.width * 0.05, corePaint);
 
-    // Outer faint ring for accent
+    // Faint outer ring
     canvas.drawCircle(
       center,
       size.width * 0.45,
@@ -122,5 +128,5 @@ class _CompassArrowPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(CustomPainter oldDelegate) => false;
+  bool shouldRepaint(CustomPainter oldDelegate) => true;
 }

@@ -86,6 +86,7 @@ flutter:
       - assets/sounds/offroute_drum_center.wav
       - assets/sounds/waypoint_pass.wav
       - assets/sounds/waypoint_error.wav
+      - assets/node_images/
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 

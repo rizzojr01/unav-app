@@ -115,6 +115,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   // true : speak all cmds (full route playback)
   bool _playFullCommands = false;
   double _lastVisualHeading = 0.0;
+  bool _showCompass = false;
 
   // ---- Low-latency UI sound (audioplayers) ----
   late final AudioPlayer _playerSend;
@@ -326,6 +327,18 @@ class _NavigationScreenState extends State<NavigationScreen>
   }
 
   Future<Uint8List?> _capturePreviewFrameBytes() async {
+    final settings = context.read<SettingsProvider>();
+
+    // Debug mode: Load image from Assets instead of Camera
+    if (settings.useDebugImage && settings.debugAssetPath != null) {
+      try {
+        final ByteData data = await rootBundle.load(settings.debugAssetPath!);
+        return data.buffer.asUint8List();
+      } catch (e) {
+        debugPrint('Error loading debug asset: $e');
+      }
+    }
+
     if (_usesNativeArPreview) {
       await _ensureArPreviewSessionStarted();
       final bytes = await _arMethodChannel.invokeMethod<Uint8List>(
@@ -378,12 +391,19 @@ class _NavigationScreenState extends State<NavigationScreen>
     ); // 150ms for extra safety
 
     try {
+      final settings = context.read<SettingsProvider>();
       final fixedBytes = await _capturePreviewFrameBytes();
       if (fixedBytes == null) {
         await _handleError(null);
         return;
       }
-      final result = await ApiService.unavNavigation(fixedBytes, 'query.jpg');
+
+      final filename =
+          (settings.useDebugImage && settings.debugAssetPath != null)
+          ? settings.debugAssetPath!.split('/').last
+          : 'query.jpg';
+
+      final result = await ApiService.unavNavigation(fixedBytes, filename);
       if (!mounted) return;
 
       if (result['success'] == true) {
@@ -451,7 +471,8 @@ class _NavigationScreenState extends State<NavigationScreen>
     _lastDistanceCountdownMark = null;
     setState(() {
       _currentPath = processingResult.session.trackedPath;
-      _lastVisualHeading = processingResult.session.currentPose?.heading ?? _lastVisualHeading;
+      _lastVisualHeading =
+          processingResult.session.currentPose?.heading ?? _lastVisualHeading;
     });
     _maybeSpeakDistanceAnnouncement(processingResult.session);
     _playGuidanceCueIfNeeded(processingResult.session);
@@ -504,7 +525,9 @@ class _NavigationScreenState extends State<NavigationScreen>
     if (!_spatialAudioExperimentActivated) {
       Future<void>.delayed(const Duration(milliseconds: 500), () {
         if (!mounted) return;
-        unawaited(_maybeActivateSpatialAudioForSession(_navigationController.session));
+        unawaited(
+          _maybeActivateSpatialAudioForSession(_navigationController.session),
+        );
       });
     }
     _maybeSpeakDistanceAnnouncement(session);
@@ -549,7 +572,10 @@ class _NavigationScreenState extends State<NavigationScreen>
     }
     final route = session.route;
     if (route == null || route.points.isEmpty) return;
-    final waypointIndex = session.nextWaypointIndex.clamp(0, route.points.length - 1);
+    final waypointIndex = session.nextWaypointIndex.clamp(
+      0,
+      route.points.length - 1,
+    );
     if (_lastDistanceAnnouncedWaypointIndex != waypointIndex) {
       _lastDistanceAnnouncedWaypointIndex = waypointIndex;
       _lastDistanceCountdownMark = null;
@@ -641,7 +667,9 @@ class _NavigationScreenState extends State<NavigationScreen>
     await _maybeActivateSpatialAudioForSession(_navigationController.session);
   }
 
-  Future<void> _maybeActivateSpatialAudioForSession(NavigationSession session) async {
+  Future<void> _maybeActivateSpatialAudioForSession(
+    NavigationSession session,
+  ) async {
     if (!_spatialAudioExperimentEnabled || !Platform.isIOS) return;
     if (_spatialAudioExperimentActivated) return;
     if (session.route == null || session.currentPose == null) return;
@@ -663,7 +691,8 @@ class _NavigationScreenState extends State<NavigationScreen>
     await _refreshAudioOutputStatus();
     if (!mounted || !Platform.isIOS) return;
 
-    final shouldUseSpatial = _spatialAudioExperimentEnabled &&
+    final shouldUseSpatial =
+        _spatialAudioExperimentEnabled &&
         _audioOutputStatus.supportsSpatial &&
         _audioOutputStatus.hasHeadphonesConnected &&
         !_audioOutputStatus.isMonoAudioEnabled &&
@@ -779,8 +808,8 @@ class _NavigationScreenState extends State<NavigationScreen>
     final headingFrequencyHz =
         minFrequencyHz +
         ((maxHeadingFrequencyHz - minFrequencyHz) * normalizedAngle);
-    final normalizedDistance =
-        ((6.0 - distanceToWaypointMeters) / (6.0 - 0.8)).clamp(0.0, 1.0);
+    final normalizedDistance = ((6.0 - distanceToWaypointMeters) / (6.0 - 0.8))
+        .clamp(0.0, 1.0);
     final distanceFrequencyHz =
         minFrequencyHz +
         ((maxDistanceFrequencyHz - minFrequencyHz) * normalizedDistance);
@@ -924,11 +953,11 @@ class _NavigationScreenState extends State<NavigationScreen>
           ArChannelContract.waypointPulseActiveKey:
               session.trackingState != TrackingState.arrived &&
               snapshot.nextWaypointWorldPoint != null,
-          ArChannelContract.waypointPulsePeriodSecKey:
-              _guidancePulseIntervalSeconds(
-                headingErrorDeg: _headingErrorToNextWaypoint(session),
-                distanceToWaypointMeters: _distanceToNextWaypointMeters(session),
-              ),
+          ArChannelContract
+              .waypointPulsePeriodSecKey: _guidancePulseIntervalSeconds(
+            headingErrorDeg: _headingErrorToNextWaypoint(session),
+            distanceToWaypointMeters: _distanceToNextWaypointMeters(session),
+          ),
         },
       );
     } catch (_) {}
@@ -1063,7 +1092,8 @@ class _NavigationScreenState extends State<NavigationScreen>
       background = Colors.teal.withValues(alpha: 0.86);
     } else if (!_spatialAudioExperimentEnabled &&
         _audioOutputStatus.supportsSpatial) {
-      message = 'Spatial guidance available. It will activate automatically when tracking starts.';
+      message =
+          'Spatial guidance available. It will activate automatically when tracking starts.';
     }
 
     if (message == null) return null;
@@ -1124,7 +1154,6 @@ class _NavigationScreenState extends State<NavigationScreen>
                               .session
                               .currentPose
                               ?.heading,
-                          firstPersonView: _firstPerson,
                         ),
                       ),
                   ],
@@ -1135,13 +1164,12 @@ class _NavigationScreenState extends State<NavigationScreen>
                 right: 16,
                 child: _buildCameraPreview(orientation),
               ),
-              Positioned(
-                right: 12,
-                top: (MediaQuery.of(context).size.height / 2) - 60,
-                child: SimpleCompass(
-                  heading: _lastVisualHeading,
+              if (_showCompass)
+                Positioned(
+                  right: 12,
+                  top: (MediaQuery.of(context).size.height / 2) - 60,
+                  child: SimpleCompass(heading: _lastVisualHeading),
                 ),
-              ),
               SafeArea(
                 child: Align(
                   alignment: Alignment.bottomCenter,
@@ -1160,20 +1188,60 @@ class _NavigationScreenState extends State<NavigationScreen>
                       GestureDetector(
                         onTap: () =>
                             setState(() => _firstPerson = !_firstPerson),
+                        onDoubleTap: () =>
+                            setState(() => _showCompass = !_showCompass),
                         child: CircleAvatar(
                           radius: 24,
                           backgroundColor: Colors.grey[300],
                           backgroundImage:
-                              Provider.of<SettingsProvider>(context, listen: false).avatarFile != null
-                                  ? FileImage(Provider.of<SettingsProvider>(context, listen: false).avatarFile!)
-                                  : (Provider.of<SettingsProvider>(context, listen: false).avatarUrl != null &&
-                                          Provider.of<SettingsProvider>(context, listen: false).avatarUrl!.isNotEmpty)
-                                      ? NetworkImage(Provider.of<SettingsProvider>(context, listen: false).avatarUrl!) as ImageProvider
-                                      : null,
-                          child: (Provider.of<SettingsProvider>(context, listen: false).avatarFile == null &&
-                                  (Provider.of<SettingsProvider>(context, listen: false).avatarUrl == null ||
-                                      Provider.of<SettingsProvider>(context, listen: false).avatarUrl!.isEmpty))
-                              ? const Icon(Icons.person, color: Colors.white, size: 24)
+                              Provider.of<SettingsProvider>(
+                                    context,
+                                    listen: false,
+                                  ).avatarFile !=
+                                  null
+                              ? FileImage(
+                                  Provider.of<SettingsProvider>(
+                                    context,
+                                    listen: false,
+                                  ).avatarFile!,
+                                )
+                              : (Provider.of<SettingsProvider>(
+                                          context,
+                                          listen: false,
+                                        ).avatarUrl !=
+                                        null &&
+                                    Provider.of<SettingsProvider>(
+                                      context,
+                                      listen: false,
+                                    ).avatarUrl!.isNotEmpty)
+                              ? NetworkImage(
+                                      Provider.of<SettingsProvider>(
+                                        context,
+                                        listen: false,
+                                      ).avatarUrl!,
+                                    )
+                                    as ImageProvider
+                              : null,
+                          child:
+                              (Provider.of<SettingsProvider>(
+                                        context,
+                                        listen: false,
+                                      ).avatarFile ==
+                                      null &&
+                                  (Provider.of<SettingsProvider>(
+                                            context,
+                                            listen: false,
+                                          ).avatarUrl ==
+                                          null ||
+                                      Provider.of<SettingsProvider>(
+                                        context,
+                                        listen: false,
+                                      ).avatarUrl!.isEmpty))
+                              ? const Icon(
+                                  Icons.person,
+                                  color: Colors.white,
+                                  size: 24,
+                                )
                               : null,
                         ),
                       ),
@@ -1195,8 +1263,8 @@ class _NavigationScreenState extends State<NavigationScreen>
                 ),
               ),
               if (_isLoading)
-                const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
+                Center(
+                  child: CircularProgressIndicator(color: Colors.grey[400]),
                 ),
               SafeArea(
                 child: Align(

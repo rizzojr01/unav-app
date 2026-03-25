@@ -12,7 +12,7 @@ plugins {
 
 // 读取签名参数（位于项目根目录 key.properties）
 val keystoreProps = Properties().apply {
-    val f = rootProject.file("android/key.properties")
+    val f = rootProject.file("key.properties")
     if (!f.exists()) {
         throw GradleException("Missing key.properties at project root. Please create it.")
     }

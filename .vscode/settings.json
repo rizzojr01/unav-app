@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "/Users/anbangyang/Desktop/UNav/unav_app/linux"
+  "cmake.sourceDirectory": "/Users/anbangyang/Desktop/UNav/unav_app/linux",
+  "dart.flutterSdkPath": ".fvm/versions/3.41.5"
 }

@@ -26,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access for navigation.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app uses the microphone so you can speak your destination.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>This app uses speech recognition to understand spoken destinations.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -42,12 +48,6 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
-    </array>
-    <key>NSCameraUsageDescription</key>
-    <string>This app needs camera access for navigation.</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>This app uses the microphone so you can speak your destination.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>This app uses speech recognition to understand spoken destinations.</string>
+	</array>
 </dict>
 </plist>

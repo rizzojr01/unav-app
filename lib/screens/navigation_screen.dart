@@ -21,6 +21,7 @@ import '../features/navigation/infrastructure/tracking/ar_channel_contract.dart'
 import '../features/navigation/infrastructure/tracking/pose_provider_factory.dart';
 import '../features/navigation/presentation/widgets/guidance_banner.dart';
 import '../widgets/floorplan_path_painter.dart';
+import '../widgets/simple_compass.dart';
 import '../services/tts_service.dart';
 import '../providers/settings_provider.dart';
 
@@ -113,6 +114,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   // false: speak only the "current step group"
   // true : speak all cmds (full route playback)
   bool _playFullCommands = false;
+  double _lastVisualHeading = 0.0;
 
   // ---- Low-latency UI sound (audioplayers) ----
   late final AudioPlayer _playerSend;
@@ -449,6 +451,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     _lastDistanceCountdownMark = null;
     setState(() {
       _currentPath = processingResult.session.trackedPath;
+      _lastVisualHeading = processingResult.session.currentPose?.heading ?? _lastVisualHeading;
     });
     _maybeSpeakDistanceAnnouncement(processingResult.session);
     _playGuidanceCueIfNeeded(processingResult.session);
@@ -1132,6 +1135,13 @@ class _NavigationScreenState extends State<NavigationScreen>
                 right: 16,
                 child: _buildCameraPreview(orientation),
               ),
+              Positioned(
+                right: 12,
+                top: (MediaQuery.of(context).size.height / 2) - 60,
+                child: SimpleCompass(
+                  heading: _lastVisualHeading,
+                ),
+              ),
               SafeArea(
                 child: Align(
                   alignment: Alignment.bottomCenter,
@@ -1152,22 +1162,19 @@ class _NavigationScreenState extends State<NavigationScreen>
                             setState(() => _firstPerson = !_firstPerson),
                         child: CircleAvatar(
                           radius: 24,
+                          backgroundColor: Colors.grey[300],
                           backgroundImage:
-                              Provider.of<SettingsProvider>(
-                                    context,
-                                    listen: false,
-                                  ).avatarUrl !=
-                                  null
-                              ? NetworkImage(
-                                  Provider.of<SettingsProvider>(
-                                    context,
-                                    listen: false,
-                                  ).avatarUrl!,
-                                )
-                              : const AssetImage(
-                                      'assets/avatar_placeholder.png',
-                                    )
-                                    as ImageProvider,
+                              Provider.of<SettingsProvider>(context, listen: false).avatarFile != null
+                                  ? FileImage(Provider.of<SettingsProvider>(context, listen: false).avatarFile!)
+                                  : (Provider.of<SettingsProvider>(context, listen: false).avatarUrl != null &&
+                                          Provider.of<SettingsProvider>(context, listen: false).avatarUrl!.isNotEmpty)
+                                      ? NetworkImage(Provider.of<SettingsProvider>(context, listen: false).avatarUrl!) as ImageProvider
+                                      : null,
+                          child: (Provider.of<SettingsProvider>(context, listen: false).avatarFile == null &&
+                                  (Provider.of<SettingsProvider>(context, listen: false).avatarUrl == null ||
+                                      Provider.of<SettingsProvider>(context, listen: false).avatarUrl!.isEmpty))
+                              ? const Icon(Icons.person, color: Colors.white, size: 24)
+                              : null,
                         ),
                       ),
                       const SizedBox(height: 12),

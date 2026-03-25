@@ -28,10 +28,12 @@ class TTSService {
 
   static Future<void> setLanguage(String langCode) async {
     await _configurePlatformAudioSession();
-    try {
-      await _tts.setEngine('com.google.android.tts');
-    } catch (e) {
-      print('Warning: Failed to set Google TTS engine -> $e');
+    if (Platform.isAndroid) {
+      try {
+        await _tts.setEngine('com.google.android.tts');
+      } catch (e) {
+        print('Warning: Failed to set Google TTS engine -> $e');
+      }
     }
 
     final normalized = langCode.trim();

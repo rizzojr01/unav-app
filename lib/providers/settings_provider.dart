@@ -15,16 +15,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// supporting reliable auto-login and profile restoration across sessions.
 class SettingsProvider extends ChangeNotifier {
   // --- User settings ---
-  String _languageCode = 'en';       // App language code: 'en', 'zh', 'th'
-  String _unit = 'feet';             // Navigation unit: 'feet' or 'meter'
-  String _turnMode = 'default';      // Turn mode: 'default' or 'deg15'
+  String _languageCode = 'en'; // App language code: 'en', 'zh', 'th'
+  String _unit = 'feet'; // Navigation unit: 'feet' or 'meter'
+  String _turnMode = 'default'; // Turn mode: 'default' or 'deg15'
   bool _announceCurrentLocation = false;
 
-  String? _email;                    // User email (login identifier)
-  String? _nickname;                 // User nickname/display name
-  File? _avatarFile;                 // Local avatar file (cropped and stored on device)
-  String? _avatarUrl;                // Remote avatar URL (from server after upload)
-  bool _isLoggedIn = false;          // Login status flag
+  String? _email; // User email (login identifier)
+  String? _nickname; // User nickname/display name
+  File? _avatarFile; // Local avatar file (cropped and stored on device)
+  String? _avatarUrl; // Remote avatar URL (from server after upload)
+  bool _isLoggedIn = false; // Login status flag
 
   // --- Getters (read-only to outside) ---
   String get languageCode => _languageCode;
@@ -107,7 +107,8 @@ class SettingsProvider extends ChangeNotifier {
       await prefs.setString('saved_turn_mode', turnMode);
       changed = true;
     }
-    if (announceCurrentLocation != null && announceCurrentLocation != _announceCurrentLocation) { 
+    if (announceCurrentLocation != null &&
+        announceCurrentLocation != _announceCurrentLocation) {
       _announceCurrentLocation = announceCurrentLocation;
       await prefs.setBool('saved_announce_location', announceCurrentLocation);
       changed = true;
@@ -186,7 +187,8 @@ class SettingsProvider extends ChangeNotifier {
     _languageCode = prefs.getString('saved_language') ?? 'en';
     _unit = prefs.getString('saved_unit') ?? 'feet';
     _turnMode = prefs.getString('saved_turn_mode') ?? 'default';
-    _announceCurrentLocation = prefs.getBool('saved_announce_location') ?? false;
+    _announceCurrentLocation =
+        prefs.getBool('saved_announce_location') ?? false;
 
     await loadAvatar();
     notifyListeners();

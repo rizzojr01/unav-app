@@ -13,3 +13,7 @@
 
 # For ARCore
 -keep class com.google.ar.core.** { *; }
+
+# Ignore missing Play Store Split Install and Tasks classes (Deferred Components)
+-dontwarn com.google.android.play.core.**
+-dontwarn io.flutter.embedding.engine.deferredcomponents.**

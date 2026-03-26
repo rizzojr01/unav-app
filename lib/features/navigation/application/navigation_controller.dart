@@ -380,7 +380,7 @@ class NavigationController {
       x: currentFloorplanImage.x,
       y: currentFloorplanImage.y,
       z: pose.z,
-      heading: _normalizeDegrees(currentHeading + rotationDeg),
+      heading: _normalizeDegrees(reference.heading + (captureHeading - currentHeading)),
       confidence: pose.confidence,
       timestamp: pose.timestamp,
     );

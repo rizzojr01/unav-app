@@ -14,7 +14,7 @@ import '../api/api_service.dart';
 import '../providers/settings_provider.dart';
 import '../services/server_address_service.dart';
 import '../widgets/server_selector.dart';
-import 'place_select_screen.dart';
+import 'navigation_mode_screen.dart';
 
 /// StartupScreen
 /// - Login / Register
@@ -465,7 +465,10 @@ class _StartupScreenState extends State<StartupScreen> {
     await ApiService.setAnnounceLocation(provider.announceCurrentLocation);
     await provider.setLoggedIn(true);
     if (context.mounted) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectScreen()));
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const NavigationModeScreen()),
+      );
     }
   }
 
@@ -651,124 +654,144 @@ class _StartupScreenState extends State<StartupScreen> {
   // -------------------- Small UI Pieces --------------------
   Widget _unitSelector() {
     final provider = context.watch<SettingsProvider>();
-    return Row(
-      children: [
-        const Text("Unit:", style: TextStyle(fontSize: 18)),
-        const SizedBox(width: 8),
-        OutlinedButton(
-          onPressed: () async {
-            await provider.setUnit('feet');
-          },
-          style: OutlinedButton.styleFrom(
-            backgroundColor: provider.unit == "feet" ? Colors.blueAccent : Colors.transparent,
-          ),
-          child: Text(
-            "Feet",
-            style: TextStyle(
-              color: provider.unit == "feet" ? Colors.white : Colors.black87,
-              fontWeight: FontWeight.bold,
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text("Unit:", style: TextStyle(fontSize: 18)),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: () async {
+              await provider.setUnit('feet');
+            },
+            style: OutlinedButton.styleFrom(
+              backgroundColor: provider.unit == "feet" ? Colors.blueAccent : Colors.transparent,
+            ),
+            child: Text(
+              "Feet",
+              style: TextStyle(
+                color: provider.unit == "feet" ? Colors.white : Colors.black87,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
-        ),
-        const SizedBox(width: 8),
-        OutlinedButton(
-          onPressed: () async {
-            await provider.setUnit('meter');
-          },
-          style: OutlinedButton.styleFrom(
-            backgroundColor: provider.unit == "meter" ? Colors.blueAccent : Colors.transparent,
-          ),
-          child: Text(
-            "Meter",
-            style: TextStyle(
-              color: provider.unit == "meter" ? Colors.white : Colors.black87,
-              fontWeight: FontWeight.bold,
+          const SizedBox(width: 8),
+          OutlinedButton(
+            onPressed: () async {
+              await provider.setUnit('meter');
+            },
+            style: OutlinedButton.styleFrom(
+              backgroundColor: provider.unit == "meter" ? Colors.blueAccent : Colors.transparent,
+            ),
+            child: Text(
+              "Meter",
+              style: TextStyle(
+                color: provider.unit == "meter" ? Colors.white : Colors.black87,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
   Widget _languageSelector() {
     final provider = context.watch<SettingsProvider>();
-    return Row(
-      children: [
-        const Text("Language:", style: TextStyle(fontSize: 18)),
-        const SizedBox(width: 8),
-        DropdownButton<String>(
-          value: provider.languageCode,
-          items: _languages
-              .map((lang) => DropdownMenuItem(
-                    value: lang['code'],
-                    child: Text(lang['name'] ?? ""),
-                  ))
-              .toList(),
-          onChanged: (String? value) async {
-            if (value != null) {
-              await provider.setLanguage(value);
-            }
-          },
-        ),
-      ],
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text("Language:", style: TextStyle(fontSize: 18)),
+          const SizedBox(width: 8),
+          DropdownButton<String>(
+            value: provider.languageCode,
+            items: _languages
+                .map((lang) => DropdownMenuItem(
+                      value: lang['code'],
+                      child: Text(lang['name'] ?? ""),
+                    ))
+                .toList(),
+            onChanged: (String? value) async {
+              if (value != null) {
+                await provider.setLanguage(value);
+              }
+            },
+          ),
+        ],
+      ),
     );
   }
 
   Widget _turnModeSelector() {
     final provider = context.watch<SettingsProvider>();
-    return Row(
-      children: [
-        const Text("Turn Mode:", style: TextStyle(fontSize: 18)),
-        const SizedBox(width: 8),
-        ..._turnModes.map((m) {
-          final code = m['code']!;
-          final name = m['name']!;
-          final isSelected = provider.turnMode == code;
-          return Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: OutlinedButton(
-              onPressed: () async {
-                await provider.setTurnMode(code);
-              },
-              style: OutlinedButton.styleFrom(
-                backgroundColor: isSelected ? Colors.blueAccent : Colors.transparent,
-              ),
-              child: Text(
-                name,
-                style: TextStyle(
-                  color: isSelected ? Colors.white : Colors.black87,
-                  fontWeight: FontWeight.bold,
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text("Turn Mode:", style: TextStyle(fontSize: 18)),
+          const SizedBox(width: 8),
+          ..._turnModes.map((m) {
+            final code = m['code']!;
+            final name = m['name']!;
+            final isSelected = provider.turnMode == code;
+            return Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: OutlinedButton(
+                onPressed: () async {
+                  await provider.setTurnMode(code);
+                },
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: isSelected ? Colors.blueAccent : Colors.transparent,
+                ),
+                child: Text(
+                  name,
+                  style: TextStyle(
+                    color: isSelected ? Colors.white : Colors.black87,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
-            ),
-          );
-        }),
-      ],
+            );
+          }),
+        ],
+      ),
     );
   }
 
   Widget _announceLocationToggle() {
     final provider = context.watch<SettingsProvider>();
-    return Row(
-      children: [
-        const Text("Announce Location:", style: TextStyle(fontSize: 18)),
-        const SizedBox(width: 8),
-        Switch(
-          value: provider.announceCurrentLocation,
-          onChanged: (bool value) async {
-            await provider.setAnnounceCurrentLocation(value);
-          },
-          activeColor: Colors.blueAccent,
-        ),
-        Text(
-          provider.announceCurrentLocation ? "ON" : "OFF",
-          style: TextStyle(
-            fontSize: 16,
-            fontWeight: FontWeight.bold,
-            color: provider.announceCurrentLocation ? Colors.blueAccent : Colors.grey,
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text("Announce Location:", style: TextStyle(fontSize: 18)),
+          const SizedBox(width: 8),
+          Switch(
+            value: provider.announceCurrentLocation,
+            onChanged: (bool value) async {
+              await provider.setAnnounceCurrentLocation(value);
+            },
+            activeColor: Colors.blueAccent,
           ),
-        ),
-      ],
+          Text(
+            provider.announceCurrentLocation ? "ON" : "OFF",
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: provider.announceCurrentLocation ? Colors.blueAccent : Colors.grey,
+            ),
+          ),
+        ],
+      ),
     );
   }
 

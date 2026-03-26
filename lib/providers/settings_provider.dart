@@ -15,16 +15,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// supporting reliable auto-login and profile restoration across sessions.
 class SettingsProvider extends ChangeNotifier {
   // --- User settings ---
-  String _languageCode = 'en';       // App language code: 'en', 'zh', 'th'
-  String _unit = 'feet';             // Navigation unit: 'feet' or 'meter'
-  String _turnMode = 'default';      // Turn mode: 'default' or 'deg15'
+  String _languageCode = 'en'; // App language code: 'en', 'zh', 'th'
+  String _unit = 'feet'; // Navigation unit: 'feet' or 'meter'
+  String _turnMode = 'default'; // Turn mode: 'default' or 'deg15'
   bool _announceCurrentLocation = false;
 
-  String? _email;                    // User email (login identifier)
-  String? _nickname;                 // User nickname/display name
-  File? _avatarFile;                 // Local avatar file (cropped and stored on device)
-  String? _avatarUrl;                // Remote avatar URL (from server after upload)
-  bool _isLoggedIn = false;          // Login status flag
+  String? _email; // User email (login identifier)
+  String? _nickname; // User nickname/display name
+  File? _avatarFile; // Local avatar file (cropped and stored on device)
+  String? _avatarUrl; // Remote avatar URL (from server after upload)
+  bool _isLoggedIn = false; // Login status flag
 
   // --- Getters (read-only to outside) ---
   String get languageCode => _languageCode;
@@ -107,7 +107,8 @@ class SettingsProvider extends ChangeNotifier {
       await prefs.setString('saved_turn_mode', turnMode);
       changed = true;
     }
-    if (announceCurrentLocation != null && announceCurrentLocation != _announceCurrentLocation) { 
+    if (announceCurrentLocation != null &&
+        announceCurrentLocation != _announceCurrentLocation) {
       _announceCurrentLocation = announceCurrentLocation;
       await prefs.setBool('saved_announce_location', announceCurrentLocation);
       changed = true;
@@ -186,10 +187,42 @@ class SettingsProvider extends ChangeNotifier {
     _languageCode = prefs.getString('saved_language') ?? 'en';
     _unit = prefs.getString('saved_unit') ?? 'feet';
     _turnMode = prefs.getString('saved_turn_mode') ?? 'default';
-    _announceCurrentLocation = prefs.getBool('saved_announce_location') ?? false;
+    _announceCurrentLocation =
+        prefs.getBool('saved_announce_location') ?? false;
 
     await loadAvatar();
+    _useDebugImage = prefs.getBool('use_debug_image') ?? false;
+    _debugAssetPath = prefs.getString('debug_asset_path');
     notifyListeners();
+  }
+
+  // --- Debug Image (persistent) ---
+  bool _useDebugImage = false;
+  String? _debugAssetPath;
+
+  bool get useDebugImage => _useDebugImage;
+  String? get debugAssetPath => _debugAssetPath;
+
+  Future<void> setDebugImageEnabled(bool enabled) async {
+    if (_useDebugImage != enabled) {
+      _useDebugImage = enabled;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('use_debug_image', enabled);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setDebugAssetPath(String? path) async {
+    if (_debugAssetPath != path) {
+      _debugAssetPath = path;
+      final prefs = await SharedPreferences.getInstance();
+      if (path != null) {
+        await prefs.setString('debug_asset_path', path);
+      } else {
+        await prefs.remove('debug_asset_path');
+      }
+      notifyListeners();
+    }
   }
 
   /// Saves the user profile (email, nickname, avatarUrl) to persistent storage.
@@ -236,6 +269,8 @@ class SettingsProvider extends ChangeNotifier {
     await prefs.remove('saved_language');
     await prefs.remove('saved_turn_mode');
     await prefs.remove('saved_announce_location');
+    await prefs.remove('use_debug_image');
+    await prefs.remove('debug_asset_path');
     await clearAvatar();
 
     _email = null;
@@ -246,6 +281,8 @@ class SettingsProvider extends ChangeNotifier {
     _unit = 'feet';
     _turnMode = 'default';
     _announceCurrentLocation = false;
+    _useDebugImage = false;
+    _debugAssetPath = null;
 
     notifyListeners();
   }

@@ -751,7 +751,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     if (delta.distance <= 1e-3) return 0;
 
     final bearingDeg = _normalizeDegrees(
-      math.atan2(-delta.dy, delta.dx) * 180 / math.pi,
+      math.atan2(delta.dy, delta.dx) * 180 / math.pi,
     );
     final diff = (bearingDeg - pose.heading).abs();
     return diff > 180 ? 360 - diff : diff;
@@ -763,7 +763,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     final signed = _signedHeadingDeltaToNextWaypoint(session);
     if (signed.abs() <= _headingLockThresholdDeg)
       return AudioCueDirection.center;
-    return signed > 0 ? AudioCueDirection.left : AudioCueDirection.right;
+    return signed > 0 ? AudioCueDirection.right : AudioCueDirection.left;
   }
 
   double _signedHeadingDeltaToNextWaypoint(NavigationSession session) {
@@ -777,7 +777,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     if (delta.distance <= 1e-3) return 0;
 
     final bearingDeg = _normalizeDegrees(
-      math.atan2(-delta.dy, delta.dx) * 180 / math.pi,
+      math.atan2(delta.dy, delta.dx) * 180 / math.pi,
     );
     return _signedHeadingDeltaDeg(pose.heading, bearingDeg);
   }

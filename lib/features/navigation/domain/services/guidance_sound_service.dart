@@ -451,7 +451,7 @@ class _StereoGuidanceAudioRenderer implements _GuidanceAudioRenderer {
   }) {
     final normalizedDeg = (((relativeAngleDeg + 180) % 360) - 180).toDouble();
     final theta = normalizedDeg * math.pi / 180.0;
-    final signedPan = math.sin(theta);
+    final signedPan = -math.sin(theta);
     final lateralStrength = signedPan.abs();
     final eased = lateralStrength * lateralStrength * (3 - (2 * lateralStrength));
     final panFromAngle = signedPan * _lerpDouble(0.0, 1.0, eased);

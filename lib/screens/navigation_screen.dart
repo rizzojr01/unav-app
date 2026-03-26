@@ -1154,6 +1154,7 @@ class _NavigationScreenState extends State<NavigationScreen>
                               .session
                               .currentPose
                               ?.heading,
+                          firstPersonView: _firstPerson,
                         ),
                       ),
                   ],
@@ -1188,61 +1189,42 @@ class _NavigationScreenState extends State<NavigationScreen>
                       GestureDetector(
                         onTap: () =>
                             setState(() => _firstPerson = !_firstPerson),
-                        onDoubleTap: () =>
-                            setState(() => _showCompass = !_showCompass),
-                        child: CircleAvatar(
-                          radius: 24,
-                          backgroundColor: Colors.grey[300],
-                          backgroundImage:
-                              Provider.of<SettingsProvider>(
-                                    context,
-                                    listen: false,
-                                  ).avatarFile !=
-                                  null
-                              ? FileImage(
-                                  Provider.of<SettingsProvider>(
-                                    context,
-                                    listen: false,
-                                  ).avatarFile!,
-                                )
-                              : (Provider.of<SettingsProvider>(
-                                          context,
-                                          listen: false,
-                                        ).avatarUrl !=
-                                        null &&
-                                    Provider.of<SettingsProvider>(
-                                      context,
-                                      listen: false,
-                                    ).avatarUrl!.isNotEmpty)
-                              ? NetworkImage(
-                                      Provider.of<SettingsProvider>(
-                                        context,
-                                        listen: false,
-                                      ).avatarUrl!,
-                                    )
-                                    as ImageProvider
-                              : null,
-                          child:
-                              (Provider.of<SettingsProvider>(
-                                        context,
-                                        listen: false,
-                                      ).avatarFile ==
-                                      null &&
-                                  (Provider.of<SettingsProvider>(
-                                            context,
-                                            listen: false,
-                                          ).avatarUrl ==
-                                          null ||
-                                      Provider.of<SettingsProvider>(
-                                        context,
-                                        listen: false,
-                                      ).avatarUrl!.isEmpty))
-                              ? const Icon(
-                                  Icons.person,
-                                  color: Colors.white,
-                                  size: 24,
-                                )
-                              : null,
+                        child: Consumer<SettingsProvider>(
+                          builder: (context, settings, _) {
+                            ImageProvider? imageProvider;
+                            if (settings.avatarFile != null) {
+                              imageProvider = FileImage(settings.avatarFile!);
+                            } else if (settings.avatarUrl != null &&
+                                settings.avatarUrl!.isNotEmpty) {
+                              imageProvider = NetworkImage(settings.avatarUrl!);
+                            }
+
+                            return AnimatedContainer(
+                              duration: const Duration(milliseconds: 250),
+                              padding: const EdgeInsets.all(2),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: _firstPerson
+                                      ? Colors.pink
+                                      : Colors.transparent,
+                                  width: 3.5,
+                                ),
+                              ),
+                              child: CircleAvatar(
+                                radius: 24,
+                                backgroundColor: Colors.grey[300],
+                                backgroundImage: imageProvider,
+                                child: (imageProvider == null)
+                                    ? const Icon(
+                                        Icons.person,
+                                        color: Colors.white,
+                                        size: 24,
+                                      )
+                                    : null,
+                              ),
+                            );
+                          },
                         ),
                       ),
                       const SizedBox(height: 12),

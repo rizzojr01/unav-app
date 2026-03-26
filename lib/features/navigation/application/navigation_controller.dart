@@ -354,13 +354,13 @@ class NavigationController {
     final arDeltaY = currentArPoint.y - originArPoint.y;
     final captureHeading = _captureHeadingDegrees(origin);
     final currentHeading = _captureHeadingDegrees(pose);
-    final rotationDeg = _normalizeDegrees(reference.heading - captureHeading);
-    final rotationRad = rotationDeg * math.pi / 180.0;
+    final sumHeadingDeg = _normalizeDegrees(reference.heading + captureHeading);
+    final sumHeadingRad = sumHeadingDeg * math.pi / 180.0;
 
     final rotatedX =
-        (arDeltaX * math.cos(rotationRad)) - (arDeltaY * math.sin(rotationRad));
+        (arDeltaX * math.cos(sumHeadingRad)) + (arDeltaY * math.sin(sumHeadingRad));
     final rotatedY =
-        (arDeltaX * math.sin(rotationRad)) + (arDeltaY * math.cos(rotationRad));
+        (arDeltaY * math.cos(sumHeadingRad)) - (arDeltaX * math.sin(sumHeadingRad));
 
     final deltaFloorplanMath = math.Point<double>(
       rotatedX / alignment.metersPerPixel,
@@ -380,7 +380,7 @@ class NavigationController {
       x: currentFloorplanImage.x,
       y: currentFloorplanImage.y,
       z: pose.z,
-      heading: _normalizeDegrees(reference.heading + (captureHeading - currentHeading)),
+      heading: _normalizeDegrees(sumHeadingDeg - currentHeading),
       confidence: pose.confidence,
       timestamp: pose.timestamp,
     );
@@ -404,8 +404,8 @@ class NavigationController {
     final origin = alignment.originArPose!;
     final originArPoint = _extractArPlanarPoint(origin);
     final captureHeading = _captureHeadingDegrees(origin);
-    final rotationDeg = _normalizeDegrees(reference.heading - captureHeading);
-    final rotationRad = rotationDeg * math.pi / 180.0;
+    final sumHeadingDeg = _normalizeDegrees(reference.heading + captureHeading);
+    final sumHeadingRad = sumHeadingDeg * math.pi / 180.0;
 
     final targetFloorplanMath = _imagePointToMathPlane(
       math.Point<double>(floorplanPoint.dx as double, floorplanPoint.dy as double),
@@ -414,20 +414,15 @@ class NavigationController {
       math.Point<double>(reference.x, reference.y),
     );
 
-    final deltaFloorplanMath = math.Point<double>(
-      targetFloorplanMath.x - referenceFloorplanMath.x,
-      targetFloorplanMath.y - referenceFloorplanMath.y,
-    );
     final deltaMeters = math.Point<double>(
-      deltaFloorplanMath.x * alignment.metersPerPixel,
-      deltaFloorplanMath.y * alignment.metersPerPixel,
+      (targetFloorplanMath.x - referenceFloorplanMath.x) * alignment.metersPerPixel,
+      (targetFloorplanMath.y - referenceFloorplanMath.y) * alignment.metersPerPixel,
     );
 
-    final inverseRotation = -rotationRad;
     final arDeltaX =
-        (deltaMeters.x * math.cos(inverseRotation)) - (deltaMeters.y * math.sin(inverseRotation));
+        (deltaMeters.x * math.cos(sumHeadingRad)) - (deltaMeters.y * math.sin(sumHeadingRad));
     final arDeltaY =
-        (deltaMeters.x * math.sin(inverseRotation)) + (deltaMeters.y * math.cos(inverseRotation));
+        (deltaMeters.x * math.sin(sumHeadingRad)) + (deltaMeters.y * math.cos(sumHeadingRad));
 
     final targetArPlanar = math.Point<double>(
       originArPoint.x + arDeltaX,

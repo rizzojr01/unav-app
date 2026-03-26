@@ -36,38 +36,11 @@ class TTSService {
       }
     }
 
-    final normalized = langCode.trim();
-    String locale;
-    if (normalized.isEmpty) {
-      locale = 'en-US';
-    } else if (normalized.contains('-')) {
-      locale = normalized;
-    } else {
-      switch (normalized) {
-        case 'zh':
-          locale = 'zh-CN';
-          break;
-        case 'th':
-          locale = 'th-TH';
-          break;
-        case 'es':
-          locale = 'es-ES';
-          break;
-        case 'fr':
-          locale = 'fr-FR';
-          break;
-        case 'de':
-          locale = 'de-DE';
-          break;
-        case 'ja':
-          locale = 'ja-JP';
-          break;
-        case 'ko':
-          locale = 'ko-KR';
-          break;
-        default:
-          locale = 'en-US';
-      }
+    String locale = 'en-US';
+    if (langCode == 'zh') {
+      locale = 'zh-CN';
+    } else if (langCode == 'th') {
+      locale = 'th-TH';
     }
     _currentLang = locale;
 
@@ -84,10 +57,6 @@ class TTSService {
     await _tts.stop();
     await _tts.setLanguage(_currentLang);
     await _tts.speak(cleaned);
-  }
-
-  static Future<void> speakAndWait(String text) async {
-    await _speakAndWait(text);
   }
 
   /// Stop any ongoing speech.
@@ -113,15 +82,11 @@ class TTSService {
     await _tts.setLanguage(_currentLang);
     await _tts.speak(cleaned);
 
-    void finish() {
-      if (!completer.isCompleted) {
-        completer.complete();
-      }
-      _tts.setCompletionHandler(() {});
-      _tts.setCancelHandler(() {});
+    void handler() {
+      completer.complete();
+      _tts.setCompletionHandler(() {}); // remove handler after once
     }
-    _tts.setCompletionHandler(finish);
-    _tts.setCancelHandler(finish);
+    _tts.setCompletionHandler(handler);
 
     return completer.future;
   }

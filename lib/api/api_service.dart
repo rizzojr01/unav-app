@@ -17,14 +17,14 @@ class ApiService {
 
   /// Returns standard headers for JSON requests.
   static Map<String, String> get _jsonHeaders => {
-    "Content-Type": "application/json",
-    if (_accessToken != null) "Authorization": "Bearer $_accessToken",
-  };
+        "Content-Type": "application/json",
+        if (_accessToken != null) "Authorization": "Bearer $_accessToken",
+      };
 
   /// Returns headers for multipart/form-data requests.
   static Map<String, String> get _multipartHeaders => {
-    if (_accessToken != null) "Authorization": "Bearer $_accessToken",
-  };
+        if (_accessToken != null) "Authorization": "Bearer $_accessToken",
+      };
 
   // ----------- Auth & Registration -----------
 
@@ -203,111 +203,6 @@ class ApiService {
   /// Sets the destination for navigation.
   static Future<Map<String, dynamic>> selectDestination(String destId) async {
     return _runTask("select_destination", {"dest_id": destId});
-  }
-
-  // ----------- Agent Tasks -----------
-
-  /// Interprets a natural-language destination request into a structured query.
-  static Future<Map<String, dynamic>> agentInterpretDestination({
-    required String utterance,
-    String? language,
-    String? currentPlace,
-    String? currentBuilding,
-    String? currentFloor,
-  }) async {
-    return _runTask("agent_interpret_destination", {
-      "utterance": utterance,
-      if (language != null) "language": language,
-      if (currentPlace != null) "current_place": currentPlace,
-      if (currentBuilding != null) "current_building": currentBuilding,
-      if (currentFloor != null) "current_floor": currentFloor,
-    });
-  }
-
-  /// Resolves a structured destination query into deterministic destination candidates.
-  static Future<Map<String, dynamic>> agentResolveDestination(
-    Map<String, dynamic> destinationQuery, {
-    String? responseLanguage,
-  }) async {
-    return _runTask("agent_resolve_destination", {
-      "destination_query": destinationQuery,
-      if (responseLanguage != null) "response_language": responseLanguage,
-    });
-  }
-
-  /// Resolves a follow-up utterance against the current destination candidates.
-  static Future<Map<String, dynamic>> agentFollowUpDestination({
-    required String utterance,
-    required List<Map<String, dynamic>> candidates,
-    String? responseLanguage,
-  }) async {
-    return _runTask("agent_followup_destination", {
-      "utterance": utterance,
-      "candidates": candidates,
-      if (responseLanguage != null) "response_language": responseLanguage,
-    });
-  }
-
-  /// Interprets a user preference request and applies a bounded profile patch.
-  static Future<Map<String, dynamic>> agentAdjustPreferences({
-    required String utterance,
-  }) async {
-    return _runTask("agent_adjust_preferences", {"utterance": utterance});
-  }
-
-  /// Explains the current navigation state in natural language.
-  static Future<Map<String, dynamic>> agentExplainNavigationState({
-    required String question,
-  }) async {
-    return _runTask("agent_explain_navigation_state", {"question": question});
-  }
-
-  /// Clears Smart Mode destination/session context so a new conversation starts fresh.
-  static Future<Map<String, dynamic>> agentResetSessionContext() async {
-    return _runTask("agent_reset_session_context", {});
-  }
-
-  /// Requests an ephemeral OpenAI Realtime client secret from the backend.
-  static Future<Map<String, dynamic>> createRealtimeSessionToken() async {
-    final resp = await http.get(
-      Uri.parse('$_server/api/realtime/token'),
-      headers: _jsonHeaders,
-    );
-    return _parseResponse(resp);
-  }
-
-  /// Uploads a short Smart Mode utterance for cloud transcription.
-  static Future<Map<String, dynamic>> transcribeSmartModeAudio({
-    required String filePath,
-    String? language,
-    String? prompt,
-  }) async {
-    final uri = Uri.parse('$_server/api/realtime/transcribe');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers.addAll(_multipartHeaders)
-      ..files.add(await http.MultipartFile.fromPath('audio', filePath));
-
-    if (language != null && language.isNotEmpty) {
-      request.fields['language'] = language;
-    }
-    if (prompt != null && prompt.isNotEmpty) {
-      request.fields['prompt'] = prompt;
-    }
-
-    final streamed = await request.send();
-    final body = await streamed.stream.bytesToString();
-    try {
-      final parsed = jsonDecode(body);
-      if (parsed is Map<String, dynamic>) {
-        return parsed;
-      }
-      return {"error": "Unexpected transcription response format."};
-    } catch (_) {
-      if (streamed.statusCode >= 200 && streamed.statusCode < 300) {
-        return {"error": "Failed to parse transcription response."};
-      }
-      return {"error": body};
-    }
   }
 
   /// Retrieves the scale value (meters or feet per pixel) for the user's current floor.

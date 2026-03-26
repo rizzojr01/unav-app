@@ -1391,7 +1391,7 @@ private final class IOSSpatialAudioBridge: NSObject {
     let normalizedAngleDeg = ((relativeAngleDeg + 180).truncatingRemainder(dividingBy: 360)) - 180
     let theta = normalizedAngleDeg * .pi / 180.0
     let distance = max(0.8, min(6.0, distanceMeters))
-    let x = Float(-sin(theta) * distance)
+    let x = Float(sin(theta) * distance)
     let z = Float(-cos(theta) * distance)
 
     return AVAudio3DPoint(x: x, y: 0.0, z: z)

@@ -292,7 +292,7 @@ class NavigationController {
     final dy = waypoint.dy - pose.y;
     if (dx.abs() + dy.abs() <= 1e-3) return null;
 
-    final bearingDeg = _normalizeDegrees(math.atan2(-dy, dx) * 180.0 / math.pi);
+    final bearingDeg = _normalizeDegrees(math.atan2(dy, dx) * 180.0 / math.pi);
     final headingDelta = _signedHeadingDeltaDeg(pose.heading, bearingDeg);
     final angle = headingDelta.abs().round();
     final metersPerPixel = _arTrackingAlignment?.metersPerPixel ?? 1.0;
@@ -306,14 +306,14 @@ class NavigationController {
     }
 
     if (_languageCode == 'zh') {
-      final dir = headingDelta > 0 ? '左转' : '右转';
+      final dir = headingDelta > 0 ? '右转' : '左转';
       return '$dir$angle度，然后前进$distanceText。';
     }
     if (_languageCode == 'th') {
-      final dir = headingDelta > 0 ? 'หมุนซ้าย' : 'หมุนขวา';
+      final dir = headingDelta > 0 ? 'หมุนขวา' : 'หมุนซ้าย';
       return '$dir $angle องศา แล้วเดิน $distanceText';
     }
-    final dir = headingDelta > 0 ? 'left' : 'right';
+    final dir = headingDelta > 0 ? 'right' : 'left';
     return 'Turn $dir $angle degrees, then go $distanceText.';
   }
 

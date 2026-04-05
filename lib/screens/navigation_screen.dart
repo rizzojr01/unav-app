@@ -18,9 +18,11 @@ import '../core/models/tracking_state.dart';
 import '../features/navigation/application/navigation_controller.dart';
 import '../features/navigation/domain/services/guidance_sound_service.dart';
 import '../features/navigation/infrastructure/tracking/ar_channel_contract.dart';
+import '../features/navigation/infrastructure/tracking/native_ar_session_adapter.dart';
 import '../features/navigation/infrastructure/tracking/pose_provider_factory.dart';
 import '../features/navigation/presentation/widgets/guidance_banner.dart';
 import '../widgets/floorplan_path_painter.dart';
+import '../services/trial_recorder.dart';
 import '../services/tts_service.dart';
 import '../providers/settings_provider.dart';
 
@@ -150,10 +152,20 @@ class _NavigationScreenState extends State<NavigationScreen>
     } else {
       _initCamera();
     }
+
+    // Start a research trial if the platform supports native AR tracking.
+    // Everything runs in parallel with normal navigation — we piggyback on
+    // the existing ARKit stream and per-capture hook to persist data for
+    // offline drift analysis.
+    unawaited(_startTrialIfSupported());
   }
 
   @override
   void dispose() {
+    // Finalize any in-flight research trial before tearing down providers.
+    // This is fire-and-forget: the recorder persists everything to disk
+    // synchronously, and the zip upload happens in the background.
+    unawaited(TrialRecorder.instance.endTrial(TrialEndReason.cancelled));
     WidgetsBinding.instance.removeObserver(this);
     _cameraController?.dispose();
     _speechDebounceTimer?.cancel();
@@ -162,6 +174,31 @@ class _NavigationScreenState extends State<NavigationScreen>
     _guidanceSoundService.dispose();
     _playerSend.dispose();
     super.dispose();
+  }
+
+  /// Start a [TrialRecorder] session for the duration of this navigation
+  /// screen. Silently no-ops on backends without a real ARKit adapter.
+  Future<void> _startTrialIfSupported() async {
+    final adapter = _poseProviderBundle.arSessionAdapter;
+    if (adapter is! NativeArSessionAdapter) return;
+    try {
+      await TrialRecorder.instance.startTrial(
+        context: TrialContext(
+          placeId: widget.selectedPlaceId,
+          placeName: widget.selectedPlaceName,
+          buildingId: widget.selectedBuildingId,
+          buildingName: widget.selectedBuildingName,
+          floorId: widget.selectedFloorId,
+          floorName: widget.selectedFloorName,
+          destinationId: widget.selectedDestinationId,
+          destinationName: widget.selectedDestinationName,
+        ),
+        poseStream: _poseProviderBundle.provider.watchPose(),
+        adapter: adapter,
+      );
+    } catch (_) {
+      // Research logging is best-effort; never break navigation.
+    }
   }
 
   @override
@@ -376,13 +413,46 @@ class _NavigationScreenState extends State<NavigationScreen>
     ); // 150ms for extra safety
 
     try {
-      final fixedBytes = await _capturePreviewFrameBytes();
+      // When native AR preview is in use, capture the frame *with its
+      // contemporaneous ARKit pose and arTimestamp* so TrialRecorder can
+      // index the query against the pose stream. The existing capture path
+      // is kept intact for non-native backends (e.g. mock route / stub).
+      Uint8List? fixedBytes;
+      NativeCaptureResult? nativeCapture;
+      if (_usesNativeArPreview) {
+        final adapter = _poseProviderBundle.arSessionAdapter;
+        if (adapter is NativeArSessionAdapter) {
+          try {
+            await _ensureArPreviewSessionStarted();
+            nativeCapture = await adapter.captureWithPose();
+          } catch (_) {
+            nativeCapture = null;
+          }
+          if (nativeCapture != null) {
+            fixedBytes = await fixImageOrientation(nativeCapture.jpegBytes);
+          }
+        }
+      }
+      // Fallback: legacy capture path (camera plugin or old native call).
+      fixedBytes ??= await _capturePreviewFrameBytes();
       if (fixedBytes == null) {
         await _handleError(null);
         return;
       }
       final result = await ApiService.unavNavigation(fixedBytes, 'query.jpg');
       if (!mounted) return;
+
+      // Persist this VPR query into the active TrialRecorder session.
+      // Best-effort: any failure in the recorder path is swallowed and the
+      // user-facing navigation result is unaffected.
+      if (nativeCapture != null && TrialRecorder.instance.isActive) {
+        unawaited(
+          TrialRecorder.instance.recordQuery(
+            capture: nativeCapture,
+            serverResponse: result,
+          ),
+        );
+      }
 
       if (result['success'] == true) {
         await _processNavResult(result);
@@ -518,6 +588,14 @@ class _NavigationScreenState extends State<NavigationScreen>
         eventType == GuidanceEventType.arrived;
     if (!shouldSpeakForEvent) {
       return;
+    }
+
+    // Finalize the research trial with the correct end reason when the
+    // user arrives at their destination. dispose() will still end the
+    // trial as `cancelled` if we leave without arriving.
+    if (eventType == GuidanceEventType.arrived &&
+        TrialRecorder.instance.isActive) {
+      unawaited(TrialRecorder.instance.endTrial(TrialEndReason.arrived));
     }
 
     final msg = session.latestGuidanceMessage;

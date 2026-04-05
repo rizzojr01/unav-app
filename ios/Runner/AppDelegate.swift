@@ -12,6 +12,9 @@ private enum ArChannelContract {
   static let stopSessionMethod = "stopSession"
   static let getCapabilitiesMethod = "getCapabilities"
   static let captureCurrentFrameMethod = "captureCurrentFrame"
+  // Returns a dict with JPEG bytes + contemporaneous ARFrame pose + arTimestamp.
+  // Used by TrialRecorder to align VPR queries with the ARKit pose stream.
+  static let captureCurrentFrameWithPoseMethod = "captureCurrentFrameWithPose"
   static let updateOverlayMethod = "updateOverlay"
   static let clearOverlayMethod = "clearOverlay"
   static let backendKey = "backend"
@@ -22,13 +25,25 @@ private enum ArChannelContract {
   static let headingKey = "heading"
   static let confidenceKey = "confidence"
   static let timestampKey = "timestampMillis"
+  // Native ARFrame.timestamp (seconds, relative to system uptime).
+  // Used to align pose stream rows with VPR query captures.
+  static let arTimestampKey = "arTimestamp"
   static let worldXKey = "worldX"
   static let worldYKey = "worldY"
   static let worldZKey = "worldZ"
+  // Camera orientation as full quaternion [qw, qx, qy, qz] in ARKit world frame.
+  // Lets downstream code reconstruct any Euler representation without loss.
+  static let quatWKey = "qw"
+  static let quatXKey = "qx"
+  static let quatYKey = "qy"
+  static let quatZKey = "qz"
+  static let trackingStateKey = "trackingState"
   static let gravityXKey = "gravityX"
   static let gravityYKey = "gravityY"
   static let gravityZKey = "gravityZ"
   static let interfaceRotationDegKey = "interfaceRotationDeg"
+  // Keys used inside the captureCurrentFrameWithPose response dict.
+  static let jpegBytesKey = "jpegBytes"
   static let pathPointsKey = "pathPoints"
   static let activePathPointsKey = "activePathPoints"
   static let futurePathPointsKey = "futurePathPoints"
@@ -580,6 +595,8 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
         result(nil)
       case ArChannelContract.captureCurrentFrameMethod:
         self.captureCurrentFrame(result: result)
+      case ArChannelContract.captureCurrentFrameWithPoseMethod:
+        self.captureCurrentFrameWithPose(result: result)
       case ArChannelContract.updateOverlayMethod:
         self.updateOverlay(arguments: call.arguments)
         result(nil)
@@ -617,6 +634,9 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
     let heading = yawDegrees(from: transform)
     let gravity = frame.camera.transform.columns.1
     let interfaceRotationDeg = currentInterfaceRotationDegrees()
+    // Full camera orientation as a quaternion (lossless; downstream can reconstruct
+    // any Euler representation it wants).
+    let quat = simd_quatf(transform)
 
     eventSink([
       ArChannelContract.xKey: x,
@@ -625,14 +645,34 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
       ArChannelContract.headingKey: heading,
       ArChannelContract.confidenceKey: confidenceValue(for: frame.camera.trackingState),
       ArChannelContract.timestampKey: Int(Date().timeIntervalSince1970 * 1000.0),
+      // Native ARFrame timestamp (seconds, CACurrentMediaTime domain). This is
+      // what lets TrialRecorder align VPR query captures with a specific row of
+      // the pose ndjson.
+      ArChannelContract.arTimestampKey: frame.timestamp,
       ArChannelContract.worldXKey: Double(translation.x),
       ArChannelContract.worldYKey: Double(translation.y),
       ArChannelContract.worldZKey: Double(translation.z),
+      ArChannelContract.quatWKey: Double(quat.real),
+      ArChannelContract.quatXKey: Double(quat.imag.x),
+      ArChannelContract.quatYKey: Double(quat.imag.y),
+      ArChannelContract.quatZKey: Double(quat.imag.z),
+      ArChannelContract.trackingStateKey: trackingStateName(for: frame.camera.trackingState),
       ArChannelContract.gravityXKey: Double(gravity.x),
       ArChannelContract.gravityYKey: Double(gravity.y),
       ArChannelContract.gravityZKey: Double(gravity.z),
       ArChannelContract.interfaceRotationDegKey: interfaceRotationDeg,
     ])
+  }
+
+  private func trackingStateName(for state: ARCamera.TrackingState) -> String {
+    switch state {
+    case .normal:
+      return "normal"
+    case .limited:
+      return "limited"
+    case .notAvailable:
+      return "notAvailable"
+    }
   }
 
   private func startSession(result: FlutterResult) {
@@ -698,6 +738,85 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
     }
 
     result(FlutterStandardTypedData(bytes: jpegData))
+  }
+
+  // Like captureCurrentFrame, but ALSO returns the contemporaneous ARFrame
+  // pose (position + quaternion) and the native ARFrame.timestamp. Used by
+  // TrialRecorder to index VPR query captures into the pose ndjson stream.
+  //
+  // Response dictionary keys:
+  //   jpegBytes        FlutterStandardTypedData (JPEG)
+  //   arTimestamp      Double (ARFrame.timestamp, seconds)
+  //   timestampMillis  Int (wall clock at capture, for convenience)
+  //   x, y, z          Double (project-space position, same convention as pose stream)
+  //   worldX/Y/Z       Double (raw ARKit translation, matches pose stream)
+  //   qw, qx, qy, qz   Double (camera orientation quaternion)
+  //   heading          Double (yaw degrees)
+  //   trackingState    String ("normal" | "limited" | "notAvailable")
+  //   interfaceRotationDeg Double
+  private func captureCurrentFrameWithPose(result: FlutterResult) {
+    guard let frame = latestFrame else {
+      result(
+        FlutterError(
+          code: "frame_unavailable",
+          message: "No AR frame available.",
+          details: nil
+        )
+      )
+      return
+    }
+
+    let image = CIImage(cvPixelBuffer: frame.capturedImage)
+    guard let cgImage = ciContext.createCGImage(image, from: image.extent) else {
+      result(
+        FlutterError(
+          code: "frame_conversion_failed",
+          message: "Unable to convert AR frame to image.",
+          details: nil
+        )
+      )
+      return
+    }
+
+    let orientation = uiImageOrientation(for: currentInterfaceOrientation())
+    let uiImage = UIImage(cgImage: cgImage, scale: 1.0, orientation: orientation)
+    guard let jpegData = uiImage.jpegData(compressionQuality: 0.95) else {
+      result(
+        FlutterError(
+          code: "frame_encoding_failed",
+          message: "Unable to encode AR frame as JPEG.",
+          details: nil
+        )
+      )
+      return
+    }
+
+    let transform = frame.camera.transform
+    let translation = transform.columns.3
+    let quat = simd_quatf(transform)
+    let heading = yawDegrees(from: transform)
+    let interfaceRotationDeg = currentInterfaceRotationDegrees()
+
+    let response: [String: Any] = [
+      ArChannelContract.jpegBytesKey: FlutterStandardTypedData(bytes: jpegData),
+      ArChannelContract.arTimestampKey: frame.timestamp,
+      ArChannelContract.timestampKey: Int(Date().timeIntervalSince1970 * 1000.0),
+      ArChannelContract.xKey: Double(translation.x),
+      ArChannelContract.yKey: Double(-translation.z),
+      ArChannelContract.zKey: Double(translation.y),
+      ArChannelContract.worldXKey: Double(translation.x),
+      ArChannelContract.worldYKey: Double(translation.y),
+      ArChannelContract.worldZKey: Double(translation.z),
+      ArChannelContract.quatWKey: Double(quat.real),
+      ArChannelContract.quatXKey: Double(quat.imag.x),
+      ArChannelContract.quatYKey: Double(quat.imag.y),
+      ArChannelContract.quatZKey: Double(quat.imag.z),
+      ArChannelContract.headingKey: heading,
+      ArChannelContract.trackingStateKey: trackingStateName(for: frame.camera.trackingState),
+      ArChannelContract.interfaceRotationDegKey: interfaceRotationDeg,
+    ]
+
+    result(response)
   }
 
   private func yawDegrees(from transform: simd_float4x4) -> Double {

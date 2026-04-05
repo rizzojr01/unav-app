@@ -284,6 +284,41 @@ class ApiService {
     return data;
   }
 
+  /// Uploads a completed trial as a single zipped archive to the backend.
+  ///
+  /// The zip is produced by [TrialRecorder._zipDirectory] and contains the
+  /// whole trial folder (meta.json, arkit.ndjson, frames/, queries/). The
+  /// backend extracts it to `<DATA_ROOT>/trials/<user_id>/<trial_id>/`.
+  ///
+  /// Returns the backend response as a Map; on network or server error
+  /// returns { "error": ... }.
+  static Future<Map<String, dynamic>> uploadTrial({
+    required String trialId,
+    required Uint8List zipBytes,
+    required String filename,
+  }) async {
+    final uri = Uri.parse('$_server/api/trials/upload');
+    final request = http.MultipartRequest('POST', uri)
+      ..headers.addAll(_multipartHeaders)
+      ..fields['trial_id'] = trialId
+      ..files.add(
+        http.MultipartFile.fromBytes('file', zipBytes, filename: filename),
+      );
+    try {
+      final resp = await request.send();
+      final respBody = await resp.stream.bytesToString();
+      try {
+        final data = jsonDecode(respBody);
+        if (data is Map<String, dynamic>) return data;
+        return {"error": respBody};
+      } catch (_) {
+        return {"error": respBody};
+      }
+    } catch (e) {
+      return {"error": e.toString()};
+    }
+  }
+
   /// Helper for calling unified task-based backend APIs.
   static Future<Map<String, dynamic>> _runTask(
     String task,

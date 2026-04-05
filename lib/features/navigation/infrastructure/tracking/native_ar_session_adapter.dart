@@ -52,7 +52,18 @@ class NativeArSessionAdapter implements ArSessionAdapter {
   final MethodChannel _methodChannel;
   final EventChannel _eventChannel;
 
-  const NativeArSessionAdapter({
+  // Cached broadcast pose stream. We must hand out a *single* broadcast
+  // instance across all watchPose() callers — if each caller instantiates
+  // its own `.map(...)` wrapper and subscribes independently, the underlying
+  // EventChannel's single-sink iOS implementation ends up with the last
+  // subscriber clobbering earlier ones on cancel/re-listen cycles (e.g. when
+  // NavigationController calls startPoseTracking mid-session). That killed
+  // pose rows mid-trial during early pilots. Keeping one cached broadcast
+  // stream lets multiple listeners share the same underlying subscription
+  // deterministically.
+  Stream<Pose>? _poseStream;
+
+  NativeArSessionAdapter({
     required ArTrackingBackend backend,
     MethodChannel methodChannel = const MethodChannel(ArChannelContract.methodChannel),
     EventChannel eventChannel = const EventChannel(ArChannelContract.eventChannel),
@@ -85,11 +96,17 @@ class NativeArSessionAdapter implements ArSessionAdapter {
 
   @override
   Stream<Pose> watchPose() {
-    return _eventChannel.receiveBroadcastStream(
+    // Lazily build the broadcast stream and cache it so every caller shares
+    // one underlying subscription — see _poseStream field comment.
+    final cached = _poseStream;
+    if (cached != null) return cached;
+    return _poseStream = _eventChannel
+        .receiveBroadcastStream(
       {
         ArChannelContract.backendKey: backend.name,
       },
-    ).map((event) {
+    )
+        .map((event) {
       final data = Map<String, dynamic>.from(event as Map);
       return Pose(
         x: (data[ArChannelContract.xKey] as num?)?.toDouble() ?? 0,
@@ -117,7 +134,7 @@ class NativeArSessionAdapter implements ArSessionAdapter {
         interfaceRotationDeg:
             (data[ArChannelContract.interfaceRotationDegKey] as num?)?.toDouble() ?? 0,
       );
-    });
+    }).asBroadcastStream();
   }
 
   /// Captures the current ARFrame along with its native ARFrame.timestamp and

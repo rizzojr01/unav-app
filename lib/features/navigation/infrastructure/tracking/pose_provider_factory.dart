@@ -60,10 +60,13 @@ class PoseProviderFactory {
 
   ArSessionAdapter _createAdapterForPlatform() {
     if (Platform.isIOS) {
-      return const NativeArSessionAdapter(backend: ArTrackingBackend.iosArKit);
+      // Non-const: the adapter caches a broadcast pose stream instance so
+      // multiple listeners (NavigationController + TrialRecorder) share one
+      // underlying EventChannel subscription. See NativeArSessionAdapter.
+      return NativeArSessionAdapter(backend: ArTrackingBackend.iosArKit);
     }
     if (Platform.isAndroid) {
-      return const NativeArSessionAdapter(backend: ArTrackingBackend.androidArCore);
+      return NativeArSessionAdapter(backend: ArTrackingBackend.androidArCore);
     }
     return StubArSessionAdapter(ArTrackingBackend.unsupported);
   }

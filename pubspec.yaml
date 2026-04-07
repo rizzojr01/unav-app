@@ -44,6 +44,8 @@ dependencies:
   audioplayers: ^5.2.1
   # For packaging TrialRecorder output as a single upload artifact.
   archive: ^4.0.2
+  # Device hardware info for research trials.
+  device_info_plus: ^11.0.0
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.

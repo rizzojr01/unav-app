@@ -31,6 +31,8 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'package:device_info_plus/device_info_plus.dart';
+
 import '../api/api_service.dart';
 import '../core/models/pose.dart';
 import '../features/navigation/infrastructure/tracking/native_ar_session_adapter.dart';
@@ -386,16 +388,43 @@ class TrialRecorder {
     required DateTime endedAt,
     required TrialEndReason endReason,
   }) async {
+    // Collect device hardware info
+    final deviceInfo = DeviceInfoPlugin();
+    Map<String, dynamic> deviceData = {};
+    if (Platform.isIOS) {
+      final ios = await deviceInfo.iosInfo;
+      deviceData = {
+        'device_model': ios.utsname.machine,     // e.g. "iPhone16,1"
+        'device_name': ios.name,                   // e.g. "Anbang's iPhone"
+        'device_model_name': ios.model,            // e.g. "iPhone"
+        'system_name': ios.systemName,             // e.g. "iOS"
+        'system_version': ios.systemVersion,       // e.g. "18.0"
+        'is_physical_device': ios.isPhysicalDevice,
+      };
+    } else if (Platform.isAndroid) {
+      final android = await deviceInfo.androidInfo;
+      deviceData = {
+        'device_model': android.model,             // e.g. "Pixel 7"
+        'device_brand': android.brand,             // e.g. "google"
+        'device_manufacturer': android.manufacturer,
+        'device_hardware': android.hardware,
+        'system_version': android.version.release,  // e.g. "14"
+        'sdk_int': android.version.sdkInt,
+        'is_physical_device': android.isPhysicalDevice,
+      };
+    }
+
     final meta = <String, dynamic>{
       'trial_id': trialId,
-      'schema_version': 1,
+      'schema_version': 2,
       'started_at': startedAt.toIso8601String(),
       'ended_at': endedAt.toIso8601String(),
       'end_reason': endReason.wire,
       'src_dst': context.toMap(),
       'platform': Platform.operatingSystem,
       'os_version': Platform.operatingSystemVersion,
-      'ar_backend': 'arkit',
+      'device': deviceData,
+      'ar_backend': Platform.isIOS ? 'arkit' : 'arcore',
       'pose_stream_expected_hz': 30,
       'frame_capture_target_hz': 2,
       'counts': {

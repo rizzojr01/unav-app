@@ -12,6 +12,7 @@ import 'package:audioplayers/audioplayers.dart';
 
 import '../api/api_service.dart';
 import '../core/models/audio_cue_direction.dart';
+import '../core/models/pose.dart';
 import '../core/models/guidance_event.dart';
 import '../core/models/navigation_session.dart';
 import '../core/models/tracking_state.dart';
@@ -477,7 +478,7 @@ class _NavigationScreenState extends State<NavigationScreen>
       }
 
       if (result['success'] == true) {
-        await _processNavResult(result);
+        await _processNavResult(result, captureSnapshot: nativeCapture);
       } else {
         await _handleError(result['error']?.toString() ?? 'Unknown error');
         return;
@@ -518,7 +519,10 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   // ========================= Result Handling & TTS =========================
 
-  Future<void> _processNavResult(Map<String, dynamic> result) async {
+  Future<void> _processNavResult(
+    Map<String, dynamic> result, {
+    NativeCaptureResult? captureSnapshot,
+  }) async {
     final provider = context.read<SettingsProvider>();
     final processingResult = _navigationController.processNavigationResult(
       rawResult: result,
@@ -556,9 +560,34 @@ class _NavigationScreenState extends State<NavigationScreen>
         final metersPerPixel = provider.unit == 'feet'
             ? floorScale * 0.3048
             : floorScale;
+        // Pass the ARKit pose from capture time so the alignment origin
+        // is anchored to the moment the photo was taken, not the moment
+        // the server response arrives. This prevents heading drift when
+        // the user rotates between capture and localization.
+        Pose? captureArPose;
+        if (captureSnapshot != null) {
+          captureArPose = Pose(
+            x: captureSnapshot.x,
+            y: captureSnapshot.y,
+            z: captureSnapshot.z,
+            heading: captureSnapshot.headingDeg,
+            timestamp: DateTime.fromMillisecondsSinceEpoch(
+              captureSnapshot.timestampMillis,
+            ),
+            arTimestamp: captureSnapshot.arTimestamp,
+            worldX: captureSnapshot.worldX,
+            worldY: captureSnapshot.worldY,
+            worldZ: captureSnapshot.worldZ,
+            qw: captureSnapshot.qw,
+            qx: captureSnapshot.qx,
+            qy: captureSnapshot.qy,
+            qz: captureSnapshot.qz,
+          );
+        }
         _navigationController.configureArTrackingAlignment(
           referenceFloorplanPose: referencePose,
           metersPerPixel: metersPerPixel,
+          captureArPose: captureArPose,
         );
       }
       final mockRouteProvider = _poseProviderBundle.mockRouteProvider;

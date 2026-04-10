@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import '../../../core/interfaces/pose_provider.dart';
 import '../../../core/models/localized_pose.dart';
+import '../../../core/models/pose.dart';
 import '../../../core/models/navigation_command.dart';
 import '../../../core/models/navigation_session.dart';
 import '../../../core/models/tracking_state.dart';
@@ -67,10 +68,12 @@ class NavigationController {
   void configureArTrackingAlignment({
     required LocalizedPose referenceFloorplanPose,
     required double metersPerPixel,
+    Pose? captureArPose,
   }) {
     _arTrackingAlignment = _ArTrackingAlignment(
       referenceFloorplanPose: referenceFloorplanPose,
       metersPerPixel: metersPerPixel <= 0 ? 1.0 : metersPerPixel,
+      captureArPose: captureArPose,
     );
   }
 
@@ -345,7 +348,10 @@ class NavigationController {
       );
     }
 
-    alignment.originArPose ??= pose;
+    // Use the ARKit pose captured at photo time (not the first streaming
+    // pose after the server responds). This eliminates heading drift when
+    // the user rotates between capture and server response.
+    alignment.originArPose ??= alignment.captureArPose ?? pose;
     final origin = alignment.originArPose!;
     final reference = alignment.referenceFloorplanPose;
     final originArPoint = _extractArPlanarPoint(origin);
@@ -460,10 +466,15 @@ class NavigationController {
 class _ArTrackingAlignment {
   final LocalizedPose referenceFloorplanPose;
   final double metersPerPixel;
+  /// ARKit pose at photo-capture time. Used to initialize [originArPose]
+  /// so that the rotation matrix is anchored to the moment the query image
+  /// was taken, not the moment the server response arrives.
+  final Pose? captureArPose;
   dynamic originArPose;
 
   _ArTrackingAlignment({
     required this.referenceFloorplanPose,
     required this.metersPerPixel,
+    this.captureArPose,
   });
 }

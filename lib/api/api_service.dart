@@ -319,6 +319,27 @@ class ApiService {
     }
   }
 
+  /// Report a trial upload attempt stage to the server for debug visibility.
+  /// Stages: zip_started | upload_started | done | failed
+  /// Fire-and-forget; never throws.
+  static Future<void> reportUploadAttempt({
+    required String trialId,
+    required String stage,
+    String error = '',
+    int zipBytes = 0,
+  }) async {
+    final uri = Uri.parse('$_server/api/trials/upload_attempt');
+    final request = http.MultipartRequest('POST', uri)
+      ..headers.addAll(_multipartHeaders)
+      ..fields['trial_id'] = trialId
+      ..fields['stage'] = stage
+      ..fields['error'] = error
+      ..fields['zip_bytes'] = zipBytes.toString();
+    try {
+      await request.send();
+    } catch (_) {}
+  }
+
   /// Helper for calling unified task-based backend APIs.
   static Future<Map<String, dynamic>> _runTask(
     String task,

@@ -438,16 +438,44 @@ class TrialRecorder {
   }
 
   Future<void> _uploadTrial(Directory dir, String trialId) async {
+    await _reportStage(trialId, 'zip_started');
+    Uint8List zipBytes;
     try {
-      final zipBytes = await _zipDirectory(dir);
-      await ApiService.uploadTrial(
+      zipBytes = await _zipDirectory(dir);
+    } catch (e, st) {
+      await _reportStage(trialId, 'failed', error: 'zip: $e\n$st');
+      return;
+    }
+
+    await _reportStage(trialId, 'upload_started', zipBytes: zipBytes.length);
+    try {
+      final result = await ApiService.uploadTrial(
         trialId: trialId,
         zipBytes: zipBytes,
         filename: '$trialId.zip',
       );
-    } catch (_) {
-      // Keep the directory on disk for later manual pull.
+      if (result.containsKey('error')) {
+        await _reportStage(trialId, 'failed',
+            error: result['error'].toString(), zipBytes: zipBytes.length);
+      } else {
+        await _reportStage(trialId, 'done', zipBytes: zipBytes.length);
+      }
+    } catch (e, st) {
+      await _reportStage(trialId, 'failed',
+          error: 'http: $e\n$st', zipBytes: zipBytes.length);
     }
+  }
+
+  Future<void> _reportStage(String trialId, String stage,
+      {String error = '', int zipBytes = 0}) async {
+    try {
+      await ApiService.reportUploadAttempt(
+        trialId: trialId,
+        stage: stage,
+        error: error,
+        zipBytes: zipBytes,
+      );
+    } catch (_) {}
   }
 
   Future<Uint8List> _zipDirectory(Directory dir) async {

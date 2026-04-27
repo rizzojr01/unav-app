@@ -29,6 +29,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -437,33 +438,228 @@ class TrialRecorder {
     await f.writeAsString(const JsonEncoder.withIndent('  ').convert(meta));
   }
 
-  Future<void> _uploadTrial(Directory dir, String trialId) async {
-    await _reportStage(trialId, 'zip_started');
-    Uint8List zipBytes;
+  // ---------- Upload pipeline (chunked + resumable) ----------
+  //
+  // The trial archive is uploaded as a sequence of fixed-size chunks
+  // (`_uploadChunkSize` bytes each). Each chunk is a separate HTTP POST,
+  // so a packet drop kills only the in-flight chunk rather than the whole
+  // upload — and the server publishes the trial only after *all* chunks
+  // arrive and the SHA-1 of the assembled zip matches what we declared.
+  //
+  // We persist the staged zip and its SHA-1 inside the trial directory
+  // (as `upload.zip` and `upload.sha1`), and we drop a `.uploaded`
+  // sentinel file once the server reports the trial as fully extracted.
+  // On app start, `resumePendingUploads()` scans for trials that are
+  // finalized (have meta.json) but not yet uploaded (no `.uploaded`) and
+  // re-runs the chunked-upload pipeline against `/trials/chunk_status` —
+  // skipping any chunks the server already has, sending only what's
+  // missing.
+
+  static const int _uploadChunkSize = 5 * 1024 * 1024; // 5 MiB
+  static const int _maxChunkRetries = 5;
+  static const String _stagedZipName = 'upload.zip';
+  static const String _stagedSha1Name = 'upload.sha1';
+  static const String _uploadedSentinelName = '.uploaded';
+
+  // Guards the resume scan from running concurrently in two callers.
+  static bool _resumeInFlight = false;
+
+  /// Scan `<app_docs>/trials/` for finalized-but-not-yet-uploaded trials
+  /// and resume their uploads in the background. Safe to call from
+  /// `main()` on every app start.
+  static Future<void> resumePendingUploads() async {
+    if (_resumeInFlight) return;
+    _resumeInFlight = true;
     try {
-      zipBytes = await _zipDirectory(dir);
+      final docs = await getApplicationDocumentsDirectory();
+      final root = Directory('${docs.path}/trials');
+      if (!await root.exists()) return;
+      await for (final ent in root.list(followLinks: false)) {
+        if (ent is! Directory) continue;
+        final dir = ent;
+        final trialId = dir.path.split(Platform.pathSeparator).last;
+        // Only attempt trials that have been finalized (meta.json present).
+        final meta = File('${dir.path}/meta.json');
+        if (!await meta.exists()) continue;
+        final sentinel = File('${dir.path}/$_uploadedSentinelName');
+        if (await sentinel.exists()) continue;
+        // Fire-and-forget; each upload manages its own retry loop and
+        // never throws.
+        unawaited(instance._uploadTrial(dir, trialId));
+      }
+    } catch (_) {
+      // Best-effort; leave failures for the next app start.
+    } finally {
+      _resumeInFlight = false;
+    }
+  }
+
+  Future<void> _uploadTrial(Directory dir, String trialId) async {
+    final sentinel = File('${dir.path}/$_uploadedSentinelName');
+    if (await sentinel.exists()) return;
+
+    final zipFile = File('${dir.path}/$_stagedZipName');
+    final sha1File = File('${dir.path}/$_stagedSha1Name');
+
+    // 1. Stage the zip (idempotent: re-uses prior staged zip on resume).
+    await _reportStage(trialId, 'zip_started');
+    String sha1Hex;
+    int sizeFull;
+    try {
+      if (!await zipFile.exists()) {
+        await _zipDirectoryToFile(dir, zipFile);
+      }
+      if (await sha1File.exists()) {
+        sha1Hex = (await sha1File.readAsString()).trim();
+      } else {
+        sha1Hex = await _sha1OfFile(zipFile);
+        await sha1File.writeAsString(sha1Hex);
+      }
+      sizeFull = await zipFile.length();
     } catch (e, st) {
       await _reportStage(trialId, 'failed', error: 'zip: $e\n$st');
       return;
     }
 
-    await _reportStage(trialId, 'upload_started', zipBytes: zipBytes.length);
-    try {
-      final result = await ApiService.uploadTrial(
-        trialId: trialId,
-        zipBytes: zipBytes,
-        filename: '$trialId.zip',
-      );
-      if (result.containsKey('error')) {
-        await _reportStage(trialId, 'failed',
-            error: result['error'].toString(), zipBytes: zipBytes.length);
-      } else {
-        await _reportStage(trialId, 'done', zipBytes: zipBytes.length);
-      }
-    } catch (e, st) {
-      await _reportStage(trialId, 'failed',
-          error: 'http: $e\n$st', zipBytes: zipBytes.length);
+    if (sizeFull <= 0) {
+      await _reportStage(trialId, 'failed', error: 'zip is empty');
+      return;
     }
+
+    await _reportStage(trialId, 'upload_started', zipBytes: sizeFull);
+
+    // 2. Idempotency: did a previous attempt's response merely get lost?
+    final exists = await ApiService.trialExists(trialId);
+    if (exists['exists'] == true) {
+      await _markUploaded(trialId, zipFile, sha1File, sentinel, sizeFull);
+      return;
+    }
+
+    // 3. Resume: ask the server which chunks it already has.
+    final chunkTotal = (sizeFull + _uploadChunkSize - 1) ~/ _uploadChunkSize;
+    Set<int> alreadyHave = <int>{};
+    final status = await ApiService.getTrialChunkStatus(trialId);
+    if (status['completed'] == true) {
+      await _markUploaded(trialId, zipFile, sha1File, sentinel, sizeFull);
+      return;
+    }
+    final received = status['chunks_received'];
+    if (received is List) {
+      // Only honor the server's resume hint when the chunk_total agrees;
+      // otherwise the client picked a different chunk size since last try
+      // and the server's chunks won't line up with ours.
+      final serverTotal = status['chunk_total'];
+      if (serverTotal == null || serverTotal == chunkTotal) {
+        for (final v in received) {
+          if (v is int) alreadyHave.add(v);
+        }
+      }
+    }
+
+    // 4. Send any missing chunks, with bounded retries per chunk.
+    bool serverSaysCompleted = false;
+    Map<String, dynamic> lastResult = const {};
+    final raf = await zipFile.open();
+    try {
+      for (int idx = 0; idx < chunkTotal; idx++) {
+        if (alreadyHave.contains(idx)) continue;
+        final start = idx * _uploadChunkSize;
+        final remaining = sizeFull - start;
+        final n = remaining < _uploadChunkSize ? remaining : _uploadChunkSize;
+        await raf.setPosition(start);
+        final chunkBytes = Uint8List.fromList(await raf.read(n));
+
+        bool ok = false;
+        for (int attempt = 0; attempt < _maxChunkRetries && !ok; attempt++) {
+          if (attempt > 0) {
+            // Exponential backoff: 0.5s, 1s, 2s, 4s.
+            final delayMs = 500 << (attempt - 1);
+            await Future.delayed(Duration(milliseconds: delayMs));
+          }
+          lastResult = await ApiService.uploadTrialChunk(
+            trialId: trialId,
+            chunkIdx: idx,
+            chunkTotal: chunkTotal,
+            sha1Full: sha1Hex,
+            sizeFull: sizeFull,
+            chunkBytes: chunkBytes,
+          );
+          final status = lastResult['_status'];
+          // Only treat 2xx as success. 409 (manifest conflict) means our
+          // local zip changed since last attempt — bail to give the next
+          // resume a clean slate.
+          if (status is int && status == 409) {
+            await _resetStagedArtifacts(zipFile, sha1File);
+            await _reportStage(trialId, 'failed',
+                error: 'manifest conflict (server has different sha1/size)',
+                zipBytes: sizeFull);
+            return;
+          }
+          if (lastResult['error'] == null &&
+              (status == null || (status is int && status >= 200 && status < 300))) {
+            ok = true;
+          }
+        }
+        if (!ok) {
+          await _reportStage(trialId, 'failed',
+              error: 'chunk $idx after $_maxChunkRetries attempts: '
+                  '${lastResult['error']}',
+              zipBytes: sizeFull);
+          return; // leave staged zip on disk; next resume will pick up
+        }
+        if (lastResult['completed'] == true) {
+          serverSaysCompleted = true;
+          break;
+        }
+      }
+    } finally {
+      await raf.close();
+    }
+
+    // 5. Confirm. Either the last chunk's response said completed, or we
+    // ask /trials/exists once more (covers the case where chunks arrived
+    // out of order and the final assembly happened on a different request).
+    if (!serverSaysCompleted) {
+      final finalCheck = await ApiService.trialExists(trialId);
+      serverSaysCompleted = finalCheck['exists'] == true;
+    }
+    if (serverSaysCompleted) {
+      await _markUploaded(trialId, zipFile, sha1File, sentinel, sizeFull);
+    } else {
+      await _reportStage(trialId, 'failed',
+          error: 'all chunks sent but server has not completed assembly',
+          zipBytes: sizeFull);
+    }
+  }
+
+  Future<void> _markUploaded(
+    String trialId,
+    File zipFile,
+    File sha1File,
+    File sentinel,
+    int sizeFull,
+  ) async {
+    try {
+      await sentinel.create(recursive: false);
+    } catch (_) {}
+    await _reportStage(trialId, 'done', zipBytes: sizeFull);
+    // Free the duplicated zip storage; the original frames/queries/arkit
+    // files remain so we still have an offline copy of the trial.
+    try {
+      await zipFile.delete();
+    } catch (_) {}
+    try {
+      await sha1File.delete();
+    } catch (_) {}
+  }
+
+  Future<void> _resetStagedArtifacts(File zipFile, File sha1File) async {
+    try {
+      await zipFile.delete();
+    } catch (_) {}
+    try {
+      await sha1File.delete();
+    } catch (_) {}
   }
 
   Future<void> _reportStage(String trialId, String stage,
@@ -478,17 +674,37 @@ class TrialRecorder {
     } catch (_) {}
   }
 
-  Future<Uint8List> _zipDirectory(Directory dir) async {
+  /// Stream the trial directory into a zip file on disk. Skips our own
+  /// upload artifacts (`upload.zip`, `upload.sha1`, `.uploaded`) so a
+  /// resume run doesn't accidentally include them.
+  Future<void> _zipDirectoryToFile(Directory dir, File zipFile) async {
     final archive = Archive();
     final base = dir.path;
     await for (final entity in dir.list(recursive: true, followLinks: false)) {
       if (entity is! File) continue;
       final rel = entity.path.substring(base.length + 1).replaceAll('\\', '/');
+      // Skip upload-pipeline artifacts to avoid recursive inclusion across
+      // retries.
+      if (rel == _stagedZipName ||
+          rel == '$_stagedZipName.part' ||
+          rel == _stagedSha1Name ||
+          rel == _uploadedSentinelName) {
+        continue;
+      }
       final bytes = await entity.readAsBytes();
       archive.addFile(ArchiveFile(rel, bytes.length, bytes));
     }
     final encoded = ZipEncoder().encode(archive);
-    return Uint8List.fromList(encoded);
+    final part = File('${zipFile.path}.part');
+    await part.writeAsBytes(encoded, flush: true);
+    await part.rename(zipFile.path);
+  }
+
+  /// Streamed SHA-1 over a file. Avoids loading the whole zip into RAM
+  /// (which can be ≥100 MiB on a long trial) just to compute the digest.
+  Future<String> _sha1OfFile(File f) async {
+    final digest = await sha1.bind(f.openRead()).first;
+    return digest.toString();
   }
 
   String _generateTrialId() {

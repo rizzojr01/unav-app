@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/api_service.dart';
 import '../providers/settings_provider.dart';
 import '../services/server_address_service.dart';
+import '../services/trial_recorder.dart';
 import '../widgets/server_selector.dart';
 import 'place_select_screen.dart';
 
@@ -214,6 +215,9 @@ class _StartupScreenState extends State<StartupScreen> {
         }
         await provider.setAll(language: lang, unit: unit, turnMode: turnMode);
         await provider.setLoggedIn(true);
+        // Retry any trial uploads that were in flight when the app last
+        // closed (or that previously failed because of network issues).
+        unawaited(TrialRecorder.resumePendingUploads());
         setState(() {
           _showFullLogin = false;
           _errorMsg = null;
@@ -464,6 +468,9 @@ class _StartupScreenState extends State<StartupScreen> {
     await ApiService.selectTurnMode(provider.turnMode);
     await ApiService.setAnnounceLocation(provider.announceCurrentLocation);
     await provider.setLoggedIn(true);
+    // Retry any trial uploads that were in flight when the app last closed
+    // (or that previously failed because of network issues).
+    unawaited(TrialRecorder.resumePendingUploads());
     if (context.mounted) {
       Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectScreen()));
     }

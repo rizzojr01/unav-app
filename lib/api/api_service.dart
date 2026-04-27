@@ -340,6 +340,92 @@ class ApiService {
     } catch (_) {}
   }
 
+  /// Whether a trial archive is already extracted on the server. Used by
+  /// the chunked-upload path to short-circuit when the previous attempt's
+  /// final 200 was lost mid-flight.
+  static Future<Map<String, dynamic>> trialExists(String trialId) async {
+    final uri = Uri.parse(
+      '$_server/api/trials/exists?trial_id=$trialId',
+    );
+    try {
+      final resp = await http.get(uri, headers: _jsonHeaders);
+      return _parseResponse(resp);
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// Get which chunks the server has already received for an in-progress
+  /// chunked upload. Used to resume an upload after app restart or after
+  /// transient network failure — only the missing chunks need to be sent.
+  ///
+  /// Returns:
+  ///   { "trial_id", "chunks_received": [int], "chunk_total": int|null,
+  ///     "completed": bool, "files_written": int (when completed) }
+  static Future<Map<String, dynamic>> getTrialChunkStatus(
+    String trialId,
+  ) async {
+    final uri = Uri.parse(
+      '$_server/api/trials/chunk_status?trial_id=$trialId',
+    );
+    try {
+      final resp = await http.get(uri, headers: _jsonHeaders);
+      return _parseResponse(resp);
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// Upload a single chunk of a chunked trial upload.
+  ///
+  /// The first chunk for a trial establishes the (chunk_total, sha1_full,
+  /// size_full) manifest on the server; later chunks must agree. When the
+  /// server has every chunk it assembles them, verifies SHA-1, and runs
+  /// the same extract pipeline as single-shot uploads.
+  ///
+  /// Returns the parsed server response, including:
+  ///   "completed": true once the final chunk has been assembled and
+  ///                extraction has been kicked off in the background.
+  static Future<Map<String, dynamic>> uploadTrialChunk({
+    required String trialId,
+    required int chunkIdx,
+    required int chunkTotal,
+    required String sha1Full,
+    required int sizeFull,
+    required Uint8List chunkBytes,
+  }) async {
+    final uri = Uri.parse('$_server/api/trials/upload_chunk');
+    final request = http.MultipartRequest('POST', uri)
+      ..headers.addAll(_multipartHeaders)
+      ..fields['trial_id'] = trialId
+      ..fields['chunk_idx'] = chunkIdx.toString()
+      ..fields['chunk_total'] = chunkTotal.toString()
+      ..fields['sha1_full'] = sha1Full
+      ..fields['size_full'] = sizeFull.toString()
+      ..files.add(
+        http.MultipartFile.fromBytes(
+          'file',
+          chunkBytes,
+          filename: 'chunk_$chunkIdx.bin',
+        ),
+      );
+    try {
+      final resp = await request.send();
+      final body = await resp.stream.bytesToString();
+      try {
+        final data = jsonDecode(body);
+        if (data is Map<String, dynamic>) {
+          return {...data, '_status': resp.statusCode};
+        }
+        return {'error': body, '_status': resp.statusCode};
+      } catch (_) {
+        return {'error': body, '_status': resp.statusCode};
+      }
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
   /// Helper for calling unified task-based backend APIs.
   static Future<Map<String, dynamic>> _runTask(
     String task,

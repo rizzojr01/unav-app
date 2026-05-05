@@ -15,7 +15,7 @@ import '../providers/settings_provider.dart';
 import '../services/server_address_service.dart';
 import '../services/trial_recorder.dart';
 import '../widgets/server_selector.dart';
-import 'place_select_screen.dart';
+import 'navigation_mode_screen.dart';
 
 /// StartupScreen
 /// - Login / Register
@@ -472,7 +472,10 @@ class _StartupScreenState extends State<StartupScreen> {
     // (or that previously failed because of network issues).
     unawaited(TrialRecorder.resumePendingUploads());
     if (context.mounted) {
-      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const PlaceSelectScreen()));
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const NavigationModeScreen()),
+      );
     }
   }
 

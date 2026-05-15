@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import '../../../../core/interfaces/path_tracker.dart';
+import '../../../../core/utils/route_snap.dart';
 import '../../../../core/models/audio_cue_direction.dart';
 import '../../../../core/models/guidance_event.dart';
 import '../../../../core/models/navigation_route.dart';
@@ -40,7 +41,11 @@ class PathTrackingService implements PathTracker {
       );
     }
 
-    final currentPoint = Offset(pose.x, pose.y);
+    final rawPoint = Offset(pose.x, pose.y);
+    final routeNet = route.routeNetworkSegments;
+    final currentPoint = routeNet.isNotEmpty
+        ? snapToRouteNetwork(rawPoint, routeNet)
+        : rawPoint;
     final fixedPolyline = <Offset>[
       Offset(anchor.x, anchor.y),
       ...route.points,

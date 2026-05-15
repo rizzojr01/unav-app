@@ -7,11 +7,15 @@ class NavigationRoute {
   final String floorKey;
   final List<Offset> points;
   final List<NavigationCommand> commands;
+  /// Full route network for this floor: all (from, to) graph edges.
+  /// Used to snap display position onto the nearest navigable path.
+  final List<(Offset, Offset)> routeNetworkSegments;
 
   const NavigationRoute({
     required this.floorKey,
     required this.points,
     required this.commands,
+    this.routeNetworkSegments = const [],
   });
 
   List<RouteSegment> get segments {

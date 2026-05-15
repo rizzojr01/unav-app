@@ -3,6 +3,7 @@ import 'dart:ui';
 import '../../../../core/models/localized_pose.dart';
 import '../../../../core/models/navigation_command.dart';
 import '../../../../core/models/navigation_route.dart';
+import '../../../../core/utils/route_snap.dart';
 
 class ParsedNavigationResult {
   final String mapKey;
@@ -29,6 +30,20 @@ class NavigationResultParser {
     final pathCoords = (result['result']?['path_coords'] as List?) ?? const [];
     final floorSegs = splitPathByFloor(pathKeys, pathCoords);
     final commands = parseCommands(result['cmds']);
+    final routeNet = parseRouteNetworkSegments(result['route_segments']);
+
+    var pose = parseFloorplanPose(result, mapKey);
+    if (pose != null && routeNet.isNotEmpty) {
+      final snapped = snapToRouteNetwork(Offset(pose.x, pose.y), routeNet);
+      pose = LocalizedPose(
+        floorKey: pose.floorKey,
+        x: snapped.dx,
+        y: snapped.dy,
+        heading: pose.heading,
+        confidence: pose.confidence,
+        timestamp: pose.timestamp,
+      );
+    }
 
     return ParsedNavigationResult(
       mapKey: mapKey,
@@ -36,8 +51,9 @@ class NavigationResultParser {
         floorKey: mapKey,
         points: floorSegs[mapKey] ?? const [],
         commands: commands,
+        routeNetworkSegments: routeNet,
       ),
-      pose: parseFloorplanPose(result, mapKey),
+      pose: pose,
     );
   }
 
@@ -93,6 +109,22 @@ class NavigationResultParser {
     }
 
     return null;
+  }
+
+  List<(Offset, Offset)> parseRouteNetworkSegments(dynamic raw) {
+    if (raw is! List) return const [];
+    final result = <(Offset, Offset)>[];
+    for (final seg in raw) {
+      if (seg is! Map) continue;
+      final from = seg['from'];
+      final to = seg['to'];
+      if (from is! List || to is! List || from.length < 2 || to.length < 2) continue;
+      result.add((
+        Offset((from[0] as num).toDouble(), (from[1] as num).toDouble()),
+        Offset((to[0] as num).toDouble(), (to[1] as num).toDouble()),
+      ));
+    }
+    return result;
   }
 
   Map<String, List<Offset>> splitPathByFloor(

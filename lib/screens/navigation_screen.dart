@@ -1262,6 +1262,11 @@ class _NavigationScreenState extends State<NavigationScreen>
                               .currentPose
                               ?.heading,
                           firstPersonView: _firstPerson,
+                          routeNetworkSegments: _navigationController
+                                  .session
+                                  .route
+                                  ?.routeNetworkSegments ??
+                              const [],
                         ),
                       ),
                   ],

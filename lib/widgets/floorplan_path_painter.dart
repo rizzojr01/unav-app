@@ -12,6 +12,9 @@ class FloorplanPathPainter extends CustomPainter {
   final Color pathColor;
   final double pathWidth;
   final bool firstPersonView;
+  /// Full route network segments (from, to) for the current floor.
+  /// Drawn as a faint overlay so the user can see all navigable paths.
+  final List<(Offset, Offset)> routeNetworkSegments;
 
   const FloorplanPathPainter({
     required this.pathPoints,
@@ -21,6 +24,7 @@ class FloorplanPathPainter extends CustomPainter {
     this.pathColor = Colors.lime,
     this.pathWidth = 6.0,
     this.firstPersonView = false,
+    this.routeNetworkSegments = const [],
   });
 
   @override
@@ -84,6 +88,18 @@ class FloorplanPathPainter extends CustomPainter {
       // Draw floorplan image in floorplan coordinates
       canvas.drawImage(floorplanImage!, Offset.zero, Paint());
 
+      // Draw route network (faint background layer)
+      if (routeNetworkSegments.isNotEmpty) {
+        final routePaint = Paint()
+          ..color = Colors.lightBlue.withValues(alpha: 0.35)
+          ..strokeWidth = 2.5 / scaleFactor
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round;
+        for (final (a, b) in routeNetworkSegments) {
+          canvas.drawLine(a, b, routePaint);
+        }
+      }
+
       // Draw path over floorplan
       if (pathPoints.length > 1) {
         final Paint pathPaint = Paint()
@@ -136,6 +152,22 @@ class FloorplanPathPainter extends CustomPainter {
     }
 
     canvas.drawImageRect(floorplanImage!, srcRect, dstRect, Paint());
+
+    // Draw route network (faint background layer)
+    if (routeNetworkSegments.isNotEmpty) {
+      final routePaint = Paint()
+        ..color = Colors.lightBlue.withValues(alpha: 0.35)
+        ..strokeWidth = 2.5
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round;
+      for (final (a, b) in routeNetworkSegments) {
+        canvas.drawLine(
+          Offset(a.dx * scale + offset.dx, a.dy * scale + offset.dy),
+          Offset(b.dx * scale + offset.dx, b.dy * scale + offset.dy),
+          routePaint,
+        );
+      }
+    }
 
     // Transform path points for display
     List<Offset> mapped = pathPoints
@@ -233,7 +265,8 @@ class FloorplanPathPainter extends CustomPainter {
       oldDelegate.headingAngleDeg != headingAngleDeg ||
       oldDelegate.pathColor != pathColor ||
       oldDelegate.pathWidth != pathWidth ||
-      oldDelegate.firstPersonView != firstPersonView;
+      oldDelegate.firstPersonView != firstPersonView ||
+      oldDelegate.routeNetworkSegments != routeNetworkSegments;
 }
 
 /// Parses path coordinates (in pixel space) from the navigation result.

@@ -25,6 +25,7 @@ class PathTrackingService implements PathTracker {
     required NavigationSession session,
     required NavigationRoute route,
     double? metersPerPixel,
+    bool snapToRoute = true,
   }) {
     final pose = session.currentPose;
     final anchor = session.localizedAnchorPose;
@@ -43,7 +44,7 @@ class PathTrackingService implements PathTracker {
 
     final rawPoint = Offset(pose.x, pose.y);
     final routeNet = route.routeNetworkSegments;
-    final currentPoint = routeNet.isNotEmpty
+    final currentPoint = snapToRoute && routeNet.isNotEmpty
         ? snapToRouteNetwork(rawPoint, routeNet)
         : rawPoint;
     final fixedPolyline = <Offset>[

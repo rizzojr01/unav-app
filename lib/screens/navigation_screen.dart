@@ -112,6 +112,7 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   // ---- UI mode ----
   bool _firstPerson = false;
+  bool _snapToRoute = true;
 
   // ---- TTS play mode ----
   // false: speak only the "current step group"
@@ -1339,7 +1340,49 @@ class _NavigationScreenState extends State<NavigationScreen>
                           },
                         ),
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 6),
+                      // ---- Snap-to-route toggle ----
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _snapToRoute = !_snapToRoute;
+                            _navigationController.snapToRoute = _snapToRoute;
+                          });
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _snapToRoute
+                                ? Colors.lime.withValues(alpha: 0.85)
+                                : Colors.black54,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.route,
+                                size: 14,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Snap',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
                       GuidanceBanner(
                         trackingState:
                             _navigationController.session.trackingState,

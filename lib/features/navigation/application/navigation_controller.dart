@@ -52,6 +52,10 @@ class NavigationController {
   String _languageCode = 'en';
   String _distanceUnit = 'meter';
 
+  /// When true, the user's pose is snapped onto the nearest route-graph edge
+  /// before path-tracking and floorplan rendering.  Toggle via [snapToRoute].
+  bool snapToRoute = true;
+
   NavigationController({
     NavigationResultParser? parser,
     PathTrackingService? pathTracker,
@@ -97,6 +101,7 @@ class NavigationController {
         session: nextSession,
         route: route,
         metersPerPixel: _arTrackingAlignment?.metersPerPixel,
+        snapToRoute: snapToRoute,
       );
 
       _session = nextSession.copyWith(
@@ -145,7 +150,7 @@ class NavigationController {
   }) {
     _languageCode = languageCode;
     _distanceUnit = distanceUnit;
-    final parsed = _parser.parse(rawResult);
+    final parsed = _parser.parse(rawResult, snapToRoute: snapToRoute);
     final shouldRefreshFloorplan = parsed.mapKey != _session.mapKey;
     final nextSession = _session.copyWith(
       route: parsed.route,
@@ -161,6 +166,7 @@ class NavigationController {
       session: nextSession,
       route: parsed.route,
       metersPerPixel: _arTrackingAlignment?.metersPerPixel,
+      snapToRoute: snapToRoute,
     );
 
     final filteredCommands = _guidanceService.filterCommands(

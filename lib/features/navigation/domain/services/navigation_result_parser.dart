@@ -20,7 +20,10 @@ class ParsedNavigationResult {
 class NavigationResultParser {
   const NavigationResultParser();
 
-  ParsedNavigationResult parse(Map<String, dynamic> result) {
+  ParsedNavigationResult parse(
+    Map<String, dynamic> result, {
+    bool snapToRoute = true,
+  }) {
     final mapKey = ((result['best_map_key'] as List?) ?? const [])
         .take(3)
         .map((item) => item.toString())
@@ -33,7 +36,7 @@ class NavigationResultParser {
     final routeNet = parseRouteNetworkSegments(result['route_segments']);
 
     var pose = parseFloorplanPose(result, mapKey);
-    if (pose != null && routeNet.isNotEmpty) {
+    if (snapToRoute && pose != null && routeNet.isNotEmpty) {
       final snapped = snapToRouteNetwork(Offset(pose.x, pose.y), routeNet);
       pose = LocalizedPose(
         floorKey: pose.floorKey,

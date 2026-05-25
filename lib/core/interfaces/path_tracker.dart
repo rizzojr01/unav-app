@@ -7,5 +7,6 @@ abstract class PathTracker {
     required NavigationSession session,
     required NavigationRoute route,
     double? metersPerPixel,
+    bool snapToRoute = true,
   });
 }

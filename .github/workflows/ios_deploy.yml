@@ -104,11 +104,26 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: false
 
-      - name: Select Latest Xcode
+      - name: Select Newest Xcode
         run: |
           echo "Available Xcode versions:"
-          ls /Applications/Xcode*.app/Contents/Developer 2>/dev/null || echo "No Xcode found"
-          echo "Using default Xcode:"
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "No Xcode found"
+          # Find the newest Xcode by version number
+          python3 << 'PYEOF'
+import re, subprocess, os
+xcodes = [d for d in os.listdir('/Applications') if re.match(r'Xcode.*\.app$', d)]
+if xcodes:
+    def ver(x):
+        m = re.search(r'(\d+(?:\.\d+)*)', x)
+        return tuple(int(n) for n in (m.group(1).split('.') if m else ['0']))
+    newest = max(xcodes, key=ver)
+    path = f'/Applications/{newest}/Contents/Developer'
+    print(f'Selecting: {path}')
+    subprocess.run(['sudo', 'xcode-select', '-s', path], check=True)
+else:
+    print('No Xcode found, using default')
+PYEOF
+          echo "Selected Xcode:"
           xcode-select -p
           echo "Xcode version:"
           xcodebuild -version

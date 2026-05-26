@@ -220,6 +220,12 @@ jobs:
           echo "Available Schemes:"
           xcodebuild -workspace ios/Runner.xcworkspace -list
 
+      - name: Create App Store Connect API Key
+        run: |
+          mkdir -p ~/.fastlane
+          echo "${{ secrets.APP_STORE_CONNECT_API_KEY_KEY }}" > ~/.fastlane/app_store_connect_key.p8
+          echo "App Store Connect API key file created"
+
       - name: Create Fastfile
         run: |
           BUNDLE_ID="${{ steps.config.outputs.bundle_id }}"
@@ -252,12 +258,19 @@ jobs:
               # Creates temporary keychain for code signing
               setup_ci if ENV['CI']
               
+              api_key = app_store_connect_api_key(
+                key_id: ENV['APP_STORE_CONNECT_API_KEY_KEY_ID'],
+                issuer_id: ENV['APP_STORE_CONNECT_API_KEY_ISSUER_ID'],
+                key_filepath: File.expand_path("~/.fastlane/app_store_connect_key.p8")
+              )
+              
               match(
                 type: "appstore",
                 app_identifier: app_identifier,
                 team_id: team_id,
                 readonly: true,
-                verbose: true
+                verbose: true,
+                api_key: api_key
               )
               
               puts "Installed certificates:"
@@ -308,7 +321,8 @@ jobs:
               
               upload_to_testflight(
                 skip_waiting_for_build_processing: true,
-                changelog: release_notes
+                changelog: release_notes,
+                api_key: api_key
               )
             end
             
@@ -334,12 +348,19 @@ jobs:
               # Creates temporary keychain for code signing
               setup_ci if ENV['CI']
               
+              api_key = app_store_connect_api_key(
+                key_id: ENV['APP_STORE_CONNECT_API_KEY_KEY_ID'],
+                issuer_id: ENV['APP_STORE_CONNECT_API_KEY_ISSUER_ID'],
+                key_filepath: File.expand_path("~/.fastlane/app_store_connect_key.p8")
+              )
+              
               match(
                 type: "appstore",
                 app_identifier: app_identifier,
                 team_id: team_id,
                 readonly: true,
-                verbose: true
+                verbose: true,
+                api_key: api_key
               )
               
               puts "Installed certificates:"
@@ -381,7 +402,8 @@ jobs:
                 skip_metadata: true,
                 skip_screenshots: true,
                 submit_for_review: false,
-                automatic_release: false
+                automatic_release: false,
+                api_key: api_key
               )
             end
           end
@@ -403,7 +425,6 @@ jobs:
           
           cat > ios/fastlane/Appfile << EOF
           app_identifier("$BUNDLE_ID")
-          apple_id("${{ secrets.APPLE_ID }}")
           itc_team_id("$ITC_TEAM_ID")
           team_id("$TEAM_ID")
           EOF

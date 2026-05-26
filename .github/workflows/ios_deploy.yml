@@ -3,7 +3,7 @@ name: iOS TestFlight Deployment
 on:
   push:
     branches:
-      - agent-smart-mode-v1-deployment-pipeline
+      - agent-smart-mode-v1
   workflow_dispatch:
     inputs:
       app:

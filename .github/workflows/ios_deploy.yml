@@ -109,12 +109,11 @@ jobs:
           echo "iOS SDK version:"
           xcrun --sdk iphoneos --show-sdk-version
 
-      # DISABLED: Xcode 16.2 already includes iOS 18.2 SDK, no need to download
-      # - name: Download iOS Platform
-      #   run: |
-      #     echo "Downloading iOS 18.2 platform..."
-      #     sudo xcodebuild -downloadPlatform iOS
-      #     echo "iOS platform downloaded successfully"
+      - name: Download iOS Platform
+        run: |
+          echo "Downloading iOS 18.2 platform..."
+          sudo xcodebuild -downloadPlatform iOS
+          echo "iOS platform downloaded successfully"
 
       - name: Clear Pub Cache
         run: |

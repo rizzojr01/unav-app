@@ -9,11 +9,10 @@ on:
       app:
         description: 'Select App to Deploy'
         required: true
-        default: 'plcore'
+        default: 'UnavArAI'
         type: choice
         options:
-          - plcore
-          - plpro
+          - UnavArAI
       build_version:
         description: 'Build Version (e.g., 1.0.0)'
         required: false

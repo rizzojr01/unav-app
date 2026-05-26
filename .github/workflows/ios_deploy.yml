@@ -39,6 +39,10 @@ env:
   FLUTTER_VERSION: '3.41.9'
   RUBY_VERSION: '3.2'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: macos-15

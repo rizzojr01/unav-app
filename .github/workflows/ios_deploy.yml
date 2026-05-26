@@ -108,21 +108,21 @@ jobs:
         run: |
           echo "Available Xcode versions:"
           ls -d /Applications/Xcode*.app 2>/dev/null || echo "No Xcode found"
-          # Find the newest Xcode by version number
-          python3 << 'PYEOF'
-import re, subprocess, os
-xcodes = [d for d in os.listdir('/Applications') if re.match(r'Xcode.*\.app$', d)]
-if xcodes:
-    def ver(x):
-        m = re.search(r'(\d+(?:\.\d+)*)', x)
-        return tuple(int(n) for n in (m.group(1).split('.') if m else ['0']))
-    newest = max(xcodes, key=ver)
-    path = f'/Applications/{newest}/Contents/Developer'
-    print(f'Selecting: {path}')
-    subprocess.run(['sudo', 'xcode-select', '-s', path], check=True)
-else:
-    print('No Xcode found, using default')
-PYEOF
+          # Find the newest Xcode by extracting version numbers
+          NEWEST_XCODE=""
+          for x in /Applications/Xcode*.app; do
+            [ -d "$x" ] || continue
+            VER=$(echo "$x" | sed 's/.*Xcode_*//' | sed 's/\.app//' | sed 's/[^0-9.]//g' | cut -d. -f1)
+            [ -z "$VER" ] && VER="0"
+            if [ -z "$NEWEST_XCODE" ] || [ "$VER" -gt "$NEWEST_VER" ] 2>/dev/null; then
+              NEWEST_XCODE="$x"
+              NEWEST_VER="$VER"
+            fi
+          done
+          if [ -n "$NEWEST_XCODE" ]; then
+            echo "Selecting: $NEWEST_XCODE"
+            sudo xcode-select -s "$NEWEST_XCODE/Contents/Developer"
+          fi
           echo "Selected Xcode:"
           xcode-select -p
           echo "Xcode version:"

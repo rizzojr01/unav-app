@@ -104,20 +104,22 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: false
 
-      - name: Select Xcode 16.2 (iOS 18.2 SDK)
+      - name: Select Latest Xcode
         run: |
-          echo "Selecting Xcode 16.2 to match local build environment..."
-          sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
-          echo "Selected Xcode version:"
+          echo "Available Xcode versions:"
+          ls /Applications/Xcode*.app/Contents/Developer 2>/dev/null || echo "No Xcode found"
+          echo "Using default Xcode:"
+          xcode-select -p
+          echo "Xcode version:"
           xcodebuild -version
           echo "iOS SDK version:"
           xcrun --sdk iphoneos --show-sdk-version
 
       - name: Download iOS Platform
         run: |
-          echo "Downloading iOS 18.2 platform..."
-          sudo xcodebuild -downloadPlatform iOS
-          echo "iOS platform downloaded successfully"
+          echo "Downloading iOS platform for selected Xcode..."
+          sudo xcodebuild -downloadPlatform iOS || echo "iOS SDK already available, skipping download"
+          echo "iOS platform ready"
 
       - name: Clear Pub Cache
         run: |

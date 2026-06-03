@@ -28,7 +28,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -677,26 +677,41 @@ class TrialRecorder {
   /// Stream the trial directory into a zip file on disk. Skips our own
   /// upload artifacts (`upload.zip`, `upload.sha1`, `.uploaded`) so a
   /// resume run doesn't accidentally include them.
+  /// Zip [dir] into [zipFile] using a streaming encoder so that only one
+  /// file's worth of data is held in memory at a time.  The old approach
+  /// (Archive + ZipEncoder.encode) accumulated every file's bytes into RAM
+  /// before writing — which caused an OOM crash on long (2 h+) sessions.
   Future<void> _zipDirectoryToFile(Directory dir, File zipFile) async {
-    final archive = Archive();
-    final base = dir.path;
-    await for (final entity in dir.list(recursive: true, followLinks: false)) {
-      if (entity is! File) continue;
-      final rel = entity.path.substring(base.length + 1).replaceAll('\\', '/');
-      // Skip upload-pipeline artifacts to avoid recursive inclusion across
-      // retries.
-      if (rel == _stagedZipName ||
-          rel == '$_stagedZipName.part' ||
-          rel == _stagedSha1Name ||
-          rel == _uploadedSentinelName) {
-        continue;
-      }
-      final bytes = await entity.readAsBytes();
-      archive.addFile(ArchiveFile(rel, bytes.length, bytes));
-    }
-    final encoded = ZipEncoder().encode(archive);
     final part = File('${zipFile.path}.part');
-    await part.writeAsBytes(encoded, flush: true);
+    // ZipFileEncoder writes compressed data directly to a RandomAccessFile,
+    // never accumulating the full archive in memory.
+    final encoder = ZipFileEncoder();
+    encoder.create(part.path);
+    try {
+      final base = dir.path;
+      // Collect + sort so the archive is deterministic across retries.
+      final files = <File>[];
+      await for (final entity in dir.list(recursive: true, followLinks: false)) {
+        if (entity is! File) continue;
+        final rel =
+            entity.path.substring(base.length + 1).replaceAll('\\', '/');
+        if (rel == _stagedZipName ||
+            rel == '$_stagedZipName.part' ||
+            rel == _stagedSha1Name ||
+            rel == _uploadedSentinelName) {
+          continue;
+        }
+        files.add(entity);
+      }
+      files.sort((a, b) => a.path.compareTo(b.path));
+      for (final f in files) {
+        final rel =
+            f.path.substring(base.length + 1).replaceAll('\\', '/');
+        await encoder.addFile(f, rel);
+      }
+    } finally {
+      await encoder.close();
+    }
     await part.rename(zipFile.path);
   }
 

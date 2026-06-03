@@ -1,0 +1,1 @@
+For every commit increment the version number in pubspec.yaml

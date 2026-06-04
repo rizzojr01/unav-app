@@ -191,9 +191,28 @@ class SettingsProvider extends ChangeNotifier {
         prefs.getBool('saved_announce_location') ?? false;
 
     await loadAvatar();
+    _captureTrialFrames = prefs.getBool('capture_trial_frames') ?? true;
     _useDebugImage = prefs.getBool('use_debug_image') ?? false;
     _debugAssetPath = prefs.getString('debug_asset_path');
     notifyListeners();
+  }
+
+  // --- Trial frame capture (persistent) ---
+  /// When false the trial recorder skips the 2 Hz frame loop and never
+  /// creates frames/.  Only ARKit pose stream + query photos are saved.
+  /// Useful for experiments that don't need dense video coverage (saves
+  /// substantial storage on long sessions).
+  bool _captureTrialFrames = true;
+
+  bool get captureTrialFrames => _captureTrialFrames;
+
+  Future<void> setCaptureTrialFrames(bool enabled) async {
+    if (_captureTrialFrames != enabled) {
+      _captureTrialFrames = enabled;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('capture_trial_frames', enabled);
+      notifyListeners();
+    }
   }
 
   // --- Debug Image (persistent) ---

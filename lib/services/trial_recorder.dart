@@ -126,6 +126,7 @@ class TrialRecorder {
   StreamSubscription<Pose>? _poseSub;
   Timer? _frameTimer;
   NativeArSessionAdapter? _adapter;
+  bool _captureFrames = true;
 
   // Last seen arTimestamp (so we can throttle to ~2 Hz for frames).
   double? _lastFrameArT;
@@ -141,6 +142,7 @@ class TrialRecorder {
     required TrialContext context,
     required Stream<Pose> poseStream,
     required NativeArSessionAdapter adapter,
+    bool captureFrames = true,
   }) async {
     if (isActive) {
       await endTrial(TrialEndReason.destinationChanged);
@@ -149,10 +151,14 @@ class TrialRecorder {
     final id = _generateTrialId();
     final docs = await getApplicationDocumentsDirectory();
     final trialDir = Directory('${docs.path}/trials/$id');
-    final framesDir = Directory('${trialDir.path}/frames');
     final queriesDir = Directory('${trialDir.path}/queries');
-    await framesDir.create(recursive: true);
     await queriesDir.create(recursive: true);
+
+    Directory? framesDir;
+    if (captureFrames) {
+      framesDir = Directory('${trialDir.path}/frames');
+      await framesDir.create(recursive: true);
+    }
 
     final arkitFile = File('${trialDir.path}/arkit.ndjson');
     final sink = arkitFile.openWrite(mode: FileMode.writeOnlyAppend);
@@ -170,6 +176,7 @@ class TrialRecorder {
     _frameCount = 0;
     _queryCount = 0;
     _lastFrameArT = null;
+    _captureFrames = captureFrames;
 
     // Subscribe to pose stream in parallel with whatever else consumes it.
     // Flutter broadcast streams allow multiple listeners.
@@ -178,13 +185,15 @@ class TrialRecorder {
       onError: (_) {/* swallow — research logging is best-effort */},
     );
 
-    // Poll native capture at a fixed interval. We can't hook a camera frame
-    // callback in Dart, but 2 Hz pulls from captureCurrentFrameWithPose give
-    // us enough temporal density for drift research (at 1 m/s walking that's
-    // one frame every 0.5 m, matching our training distribution).
-    _frameTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      unawaited(_captureFrameIfReady());
-    });
+    if (captureFrames) {
+      // Poll native capture at a fixed interval. We can't hook a camera frame
+      // callback in Dart, but 2 Hz pulls from captureCurrentFrameWithPose give
+      // us enough temporal density for drift research (at 1 m/s walking that's
+      // one frame every 0.5 m, matching our training distribution).
+      _frameTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+        unawaited(_captureFrameIfReady());
+      });
+    }
   }
 
   /// Called by navigation_screen whenever the user successfully fires a VPR
@@ -427,7 +436,8 @@ class TrialRecorder {
       'device': deviceData,
       'ar_backend': Platform.isIOS ? 'arkit' : 'arcore',
       'pose_stream_expected_hz': 30,
-      'frame_capture_target_hz': 2,
+      'frame_capture_target_hz': _captureFrames ? 2 : 0,
+      'capture_frames': _captureFrames,
       'counts': {
         'pose_rows': _poseRowCount,
         'frames': _frameCount,

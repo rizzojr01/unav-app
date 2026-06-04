@@ -187,6 +187,7 @@ class _NavigationScreenState extends State<NavigationScreen>
     final adapter = _poseProviderBundle.arSessionAdapter;
     if (adapter is! NativeArSessionAdapter) return;
     try {
+      final settings = context.read<SettingsProvider>();
       await TrialRecorder.instance.startTrial(
         context: TrialContext(
           placeId: widget.selectedPlaceId,
@@ -200,6 +201,7 @@ class _NavigationScreenState extends State<NavigationScreen>
         ),
         poseStream: _poseProviderBundle.provider.watchPose(),
         adapter: adapter,
+        captureFrames: settings.captureTrialFrames,
       );
     } catch (_) {
       // Research logging is best-effort; never break navigation.

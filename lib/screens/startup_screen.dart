@@ -772,6 +772,35 @@ class _StartupScreenState extends State<StartupScreen> {
     );
   }
 
+  Widget _captureFramesToggle() {
+    return Consumer<SettingsProvider>(
+      builder: (context, provider, _) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text("Record Video Frames:", style: TextStyle(fontSize: 18)),
+          const SizedBox(width: 8),
+          Switch(
+            value: provider.captureTrialFrames,
+            onChanged: (bool value) async {
+              await provider.setCaptureTrialFrames(value);
+            },
+            activeColor: Colors.blueAccent,
+          ),
+          Text(
+            provider.captureTrialFrames ? "ON" : "OFF",
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: provider.captureTrialFrames
+                  ? Colors.blueAccent
+                  : Colors.grey,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _announceLocationToggle() {
     final provider = context.watch<SettingsProvider>();
     return FittedBox(
@@ -840,6 +869,8 @@ class _StartupScreenState extends State<StartupScreen> {
         _turnModeSelector(),
         const SizedBox(height: 12),
         _announceLocationToggle(),
+        const SizedBox(height: 12),
+        _captureFramesToggle(),
         const SizedBox(height: 12),
         if (_errorMsg != null)
           Padding(
@@ -947,6 +978,8 @@ class _StartupScreenState extends State<StartupScreen> {
         _turnModeSelector(),
         const SizedBox(height: 12),
         _announceLocationToggle(),
+        const SizedBox(height: 12),
+        _captureFramesToggle(),
         const SizedBox(height: 12),
         if (_errorMsg != null)
           Padding(

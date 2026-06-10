@@ -36,16 +36,33 @@ class NavigationResultParser {
     final routeNet = parseRouteNetworkSegments(result['route_segments']);
 
     var pose = parseFloorplanPose(result, mapKey);
-    if (snapToRoute && pose != null && routeNet.isNotEmpty) {
-      final snapped = snapToRouteNetwork(Offset(pose.x, pose.y), routeNet);
-      pose = LocalizedPose(
-        floorKey: pose.floorKey,
-        x: snapped.dx,
-        y: snapped.dy,
-        heading: pose.heading,
-        confidence: pose.confidence,
-        timestamp: pose.timestamp,
+    if (snapToRoute && pose != null) {
+      // Prefer the server-computed snap (full route network) when available.
+      final serverSnapped = parseFloorplanPose(
+        {'floorplan_pose': result['snapped_pose']},
+        mapKey,
       );
+      if (serverSnapped != null) {
+        pose = LocalizedPose(
+          floorKey: pose.floorKey,
+          x: serverSnapped.x,
+          y: serverSnapped.y,
+          heading: pose.heading,        // keep original heading
+          confidence: pose.confidence,
+          timestamp: pose.timestamp,
+        );
+      } else if (routeNet.isNotEmpty) {
+        // Fallback: client-side snap from partial route_segments.
+        final snapped = snapToRouteNetwork(Offset(pose.x, pose.y), routeNet);
+        pose = LocalizedPose(
+          floorKey: pose.floorKey,
+          x: snapped.dx,
+          y: snapped.dy,
+          heading: pose.heading,
+          confidence: pose.confidence,
+          timestamp: pose.timestamp,
+        );
+      }
     }
 
     return ParsedNavigationResult(

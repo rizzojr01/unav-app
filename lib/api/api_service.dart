@@ -99,12 +99,17 @@ class ApiService {
     String email,
   ) async {
     final uri = Uri.parse('$_server/api/upload_avatar');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers.addAll(_multipartHeaders)
-      ..fields['email'] = email
-      ..files.add(
-        http.MultipartFile.fromBytes('file', imageBytes, filename: filename),
-      );
+    final request =
+        http.MultipartRequest('POST', uri)
+          ..headers.addAll(_multipartHeaders)
+          ..fields['email'] = email
+          ..files.add(
+            http.MultipartFile.fromBytes(
+              'file',
+              imageBytes,
+              filename: filename,
+            ),
+          );
     final resp = await request.send();
     final respBody = await resp.stream.bytesToString();
     return jsonDecode(respBody);
@@ -283,9 +288,10 @@ class ApiService {
     String? prompt,
   }) async {
     final uri = Uri.parse('$_server/api/realtime/transcribe');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers.addAll(_multipartHeaders)
-      ..files.add(await http.MultipartFile.fromPath('audio', filePath));
+    final request =
+        http.MultipartRequest('POST', uri)
+          ..headers.addAll(_multipartHeaders)
+          ..files.add(await http.MultipartFile.fromPath('audio', filePath));
 
     if (language != null && language.isNotEmpty) {
       request.fields['language'] = language;
@@ -308,6 +314,39 @@ class ApiService {
       }
       return {"error": body};
     }
+  }
+
+  /// Synthesizes natural speech for Smart Mode replies on the backend.
+  static Future<Uint8List> synthesizeSpeech({
+    required String text,
+    String? language,
+  }) async {
+    final resp = await http.post(
+      Uri.parse('$_server/api/realtime/speech'),
+      headers: _jsonHeaders,
+      body: jsonEncode({
+        'text': text,
+        if (language != null && language.isNotEmpty) 'language': language,
+      }),
+    );
+
+    if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      return resp.bodyBytes;
+    }
+
+    String? parsedError;
+    try {
+      final parsed = jsonDecode(resp.body);
+      if (parsed is Map<String, dynamic>) {
+        parsedError = (parsed['detail'] ?? parsed['error'])?.toString();
+      }
+    } catch (_) {
+      // Fall through to the raw response body below.
+    }
+    throw Exception(
+      parsedError ??
+          (resp.body.isNotEmpty ? resp.body : 'Speech synthesis failed.'),
+    );
   }
 
   /// Retrieves the scale value (meters or feet per pixel) for the user's current floor.
@@ -357,18 +396,28 @@ class ApiService {
   }
 
   /// Uploads a query image for localization/navigation and gets the response.
+  ///
+  /// [forceWalkable] — when true (default), the server snaps the localized
+  /// position into the walkable area before pathfinding.  Set to false to
+  /// use the raw PnP position directly (useful for debugging).
   static Future<Map<String, dynamic>> unavNavigation(
     Uint8List imageBytes,
-    String filename,
-  ) async {
+    String filename, {
+    bool forceWalkable = true,
+  }) async {
     final uri = Uri.parse('$_server/api/run_task');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers.addAll(_multipartHeaders)
-      ..fields['task'] = "unav_navigation"
-      ..fields['inputs'] = "{}"
-      ..files.add(
-        http.MultipartFile.fromBytes('file', imageBytes, filename: filename),
-      );
+    final request =
+        http.MultipartRequest('POST', uri)
+          ..headers.addAll(_multipartHeaders)
+          ..fields['task'] = "unav_navigation"
+          ..fields['inputs'] = jsonEncode({"force_walkable": forceWalkable})
+          ..files.add(
+            http.MultipartFile.fromBytes(
+              'file',
+              imageBytes,
+              filename: filename,
+            ),
+          );
     final resp = await request.send();
     final respBody = await resp.stream.bytesToString();
     final data = jsonDecode(respBody);
@@ -403,12 +452,13 @@ class ApiService {
     required String filename,
   }) async {
     final uri = Uri.parse('$_server/api/trials/upload');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers.addAll(_multipartHeaders)
-      ..fields['trial_id'] = trialId
-      ..files.add(
-        http.MultipartFile.fromBytes('file', zipBytes, filename: filename),
-      );
+    final request =
+        http.MultipartRequest('POST', uri)
+          ..headers.addAll(_multipartHeaders)
+          ..fields['trial_id'] = trialId
+          ..files.add(
+            http.MultipartFile.fromBytes('file', zipBytes, filename: filename),
+          );
     try {
       final resp = await request.send();
       final respBody = await resp.stream.bytesToString();
@@ -434,12 +484,13 @@ class ApiService {
     int zipBytes = 0,
   }) async {
     final uri = Uri.parse('$_server/api/trials/upload_attempt');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers.addAll(_multipartHeaders)
-      ..fields['trial_id'] = trialId
-      ..fields['stage'] = stage
-      ..fields['error'] = error
-      ..fields['zip_bytes'] = zipBytes.toString();
+    final request =
+        http.MultipartRequest('POST', uri)
+          ..headers.addAll(_multipartHeaders)
+          ..fields['trial_id'] = trialId
+          ..fields['stage'] = stage
+          ..fields['error'] = error
+          ..fields['zip_bytes'] = zipBytes.toString();
     try {
       await request.send();
     } catch (_) {}
@@ -449,9 +500,7 @@ class ApiService {
   /// the chunked-upload path to short-circuit when the previous attempt's
   /// final 200 was lost mid-flight.
   static Future<Map<String, dynamic>> trialExists(String trialId) async {
-    final uri = Uri.parse(
-      '$_server/api/trials/exists?trial_id=$trialId',
-    );
+    final uri = Uri.parse('$_server/api/trials/exists?trial_id=$trialId');
     try {
       final resp = await http.get(uri, headers: _jsonHeaders);
       return _parseResponse(resp);
@@ -470,9 +519,7 @@ class ApiService {
   static Future<Map<String, dynamic>> getTrialChunkStatus(
     String trialId,
   ) async {
-    final uri = Uri.parse(
-      '$_server/api/trials/chunk_status?trial_id=$trialId',
-    );
+    final uri = Uri.parse('$_server/api/trials/chunk_status?trial_id=$trialId');
     try {
       final resp = await http.get(uri, headers: _jsonHeaders);
       return _parseResponse(resp);
@@ -500,20 +547,21 @@ class ApiService {
     required Uint8List chunkBytes,
   }) async {
     final uri = Uri.parse('$_server/api/trials/upload_chunk');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers.addAll(_multipartHeaders)
-      ..fields['trial_id'] = trialId
-      ..fields['chunk_idx'] = chunkIdx.toString()
-      ..fields['chunk_total'] = chunkTotal.toString()
-      ..fields['sha1_full'] = sha1Full
-      ..fields['size_full'] = sizeFull.toString()
-      ..files.add(
-        http.MultipartFile.fromBytes(
-          'file',
-          chunkBytes,
-          filename: 'chunk_$chunkIdx.bin',
-        ),
-      );
+    final request =
+        http.MultipartRequest('POST', uri)
+          ..headers.addAll(_multipartHeaders)
+          ..fields['trial_id'] = trialId
+          ..fields['chunk_idx'] = chunkIdx.toString()
+          ..fields['chunk_total'] = chunkTotal.toString()
+          ..fields['sha1_full'] = sha1Full
+          ..fields['size_full'] = sizeFull.toString()
+          ..files.add(
+            http.MultipartFile.fromBytes(
+              'file',
+              chunkBytes,
+              filename: 'chunk_$chunkIdx.bin',
+            ),
+          );
     try {
       final resp = await request.send();
       final body = await resp.stream.bytesToString();

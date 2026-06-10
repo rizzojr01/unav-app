@@ -113,6 +113,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   // ---- UI mode ----
   bool _firstPerson = false;
   bool _snapToRoute = true;
+  bool _forceWalkable = true;
 
   // ---- TTS play mode ----
   // false: speak only the "current step group"
@@ -465,7 +466,11 @@ class _NavigationScreenState extends State<NavigationScreen>
           ? settings.debugAssetPath!.split('/').last
           : 'query.jpg';
 
-      final result = await ApiService.unavNavigation(fixedBytes, filename);
+      final result = await ApiService.unavNavigation(
+        fixedBytes,
+        filename,
+        forceWalkable: _forceWalkable,
+      );
       if (!mounted) return;
 
       // Persist this VPR query into the active TrialRecorder session.
@@ -1374,6 +1379,45 @@ class _NavigationScreenState extends State<NavigationScreen>
                               const SizedBox(width: 4),
                               Text(
                                 'Snap',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      // ---- Force-walkable toggle ----
+                      GestureDetector(
+                        onTap: () {
+                          setState(() => _forceWalkable = !_forceWalkable);
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _forceWalkable
+                                ? Colors.cyan.withValues(alpha: 0.85)
+                                : Colors.black54,
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.grid_view_rounded,
+                                size: 14,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Walkable',
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 11,

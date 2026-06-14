@@ -470,6 +470,10 @@ class _NavigationScreenState extends State<NavigationScreen>
         fixedBytes,
         filename,
         forceWalkable: _forceWalkable,
+        cx: nativeCapture?.cx,
+        cy: nativeCapture?.cy,
+        fx: nativeCapture?.fx,
+        fy: nativeCapture?.fy,
       );
       if (!mounted) return;
 

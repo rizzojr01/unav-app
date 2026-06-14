@@ -45,6 +45,11 @@ class ArChannelContract {
   static const String gravityYKey = 'gravityY';
   static const String gravityZKey = 'gravityZ';
   static const String interfaceRotationDegKey = 'interfaceRotationDeg';
+  // Camera intrinsics in JPEG coordinate space (post-rotation, post-scale).
+  static const String fxKey = 'fx';
+  static const String fyKey = 'fy';
+  static const String cxKey = 'cx';
+  static const String cyKey = 'cy';
   static const String pathPointsKey = 'pathPoints';
   static const String activePathPointsKey = 'activePathPoints';
   static const String futurePathPointsKey = 'futurePathPoints';

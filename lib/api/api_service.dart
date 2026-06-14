@@ -404,13 +404,22 @@ class ApiService {
     Uint8List imageBytes,
     String filename, {
     bool forceWalkable = true,
+    double? cx,
+    double? cy,
+    double? fx,
+    double? fy,
   }) async {
     final uri = Uri.parse('$_server/api/run_task');
+    final inputs = <String, dynamic>{"force_walkable": forceWalkable};
+    if (cx != null) inputs['cx'] = cx;
+    if (cy != null) inputs['cy'] = cy;
+    if (fx != null) inputs['fx'] = fx;
+    if (fy != null) inputs['fy'] = fy;
     final request =
         http.MultipartRequest('POST', uri)
           ..headers.addAll(_multipartHeaders)
           ..fields['task'] = "unav_navigation"
-          ..fields['inputs'] = jsonEncode({"force_walkable": forceWalkable})
+          ..fields['inputs'] = jsonEncode(inputs)
           ..files.add(
             http.MultipartFile.fromBytes(
               'file',

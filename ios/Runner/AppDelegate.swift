@@ -42,6 +42,13 @@ private enum ArChannelContract {
   static let gravityYKey = "gravityY"
   static let gravityZKey = "gravityZ"
   static let interfaceRotationDegKey = "interfaceRotationDeg"
+  // Camera intrinsics (principal point + focal lengths) in JPEG coordinate space.
+  // Already transformed for the display orientation and scaled to match the
+  // 640-maxSide JPEG that Flutter's fixImageOrientation produces.
+  static let fxKey = "fx"
+  static let fyKey = "fy"
+  static let cxKey = "cx"
+  static let cyKey = "cy"
   // Keys used inside the captureCurrentFrameWithPose response dict.
   static let jpegBytesKey = "jpegBytes"
   static let pathPointsKey = "pathPoints"
@@ -797,6 +804,37 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
     let heading = yawDegrees(from: transform)
     let interfaceRotationDeg = currentInterfaceRotationDegrees()
 
+    // Compute camera intrinsics in the JPEG coordinate space the server sees.
+    // ARKit intrinsics are in landscape pixel-buffer space; fixImageOrientation in
+    // Flutter rotates (via EXIF autoCorrectionAngle) and scales to maxSide=640.
+    let intr = frame.camera.intrinsics
+    let bufW = Float(frame.camera.imageResolution.width)
+    let bufH = Float(frame.camera.imageResolution.height)
+    let rawFx = intr.columns.0.x
+    let rawFy = intr.columns.1.y
+    let rawCx = intr.columns.2.x
+    let rawCy = intr.columns.2.y
+    let jpegScale = 640.0 / max(bufW, bufH)
+    let uiOrient = uiImageOrientation(for: currentInterfaceOrientation())
+    let jpegCx: Float
+    let jpegCy: Float
+    let jpegFx: Float
+    let jpegFy: Float
+    switch uiOrient {
+    case .right:   // portrait — 90° CW from landscape buffer
+      jpegCx = (bufH - rawCy) * jpegScale; jpegCy = rawCx * jpegScale
+      jpegFx = rawFy * jpegScale;          jpegFy = rawFx * jpegScale
+    case .left:    // portraitUpsideDown — 90° CCW
+      jpegCx = rawCy * jpegScale;          jpegCy = (bufW - rawCx) * jpegScale
+      jpegFx = rawFy * jpegScale;          jpegFy = rawFx * jpegScale
+    case .down:    // landscapeRight — 180°
+      jpegCx = (bufW - rawCx) * jpegScale; jpegCy = (bufH - rawCy) * jpegScale
+      jpegFx = rawFx * jpegScale;          jpegFy = rawFy * jpegScale
+    default:       // .up = landscapeLeft — no rotation
+      jpegCx = rawCx * jpegScale;          jpegCy = rawCy * jpegScale
+      jpegFx = rawFx * jpegScale;          jpegFy = rawFy * jpegScale
+    }
+
     let response: [String: Any] = [
       ArChannelContract.jpegBytesKey: FlutterStandardTypedData(bytes: jpegData),
       ArChannelContract.arTimestampKey: frame.timestamp,
@@ -814,6 +852,10 @@ private final class IOSArTrackingBridge: NSObject, FlutterStreamHandler, ARSessi
       ArChannelContract.headingKey: heading,
       ArChannelContract.trackingStateKey: trackingStateName(for: frame.camera.trackingState),
       ArChannelContract.interfaceRotationDegKey: interfaceRotationDeg,
+      ArChannelContract.fxKey: Double(jpegFx),
+      ArChannelContract.fyKey: Double(jpegFy),
+      ArChannelContract.cxKey: Double(jpegCx),
+      ArChannelContract.cyKey: Double(jpegCy),
     ]
 
     result(response)

@@ -26,6 +26,11 @@ class NativeCaptureResult {
   final double headingDeg;
   final String trackingState;
   final double interfaceRotationDeg;
+  // Camera intrinsics in JPEG coordinate space (null if native side didn't provide them).
+  final double? fx;
+  final double? fy;
+  final double? cx;
+  final double? cy;
 
   const NativeCaptureResult({
     required this.jpegBytes,
@@ -44,6 +49,10 @@ class NativeCaptureResult {
     required this.headingDeg,
     required this.trackingState,
     required this.interfaceRotationDeg,
+    this.fx,
+    this.fy,
+    this.cx,
+    this.cy,
   });
 }
 
@@ -179,6 +188,10 @@ class NativeArSessionAdapter implements ArSessionAdapter {
           (data[ArChannelContract.interfaceRotationDegKey] as num?)
                   ?.toDouble() ??
               0,
+      fx: (data[ArChannelContract.fxKey] as num?)?.toDouble(),
+      fy: (data[ArChannelContract.fyKey] as num?)?.toDouble(),
+      cx: (data[ArChannelContract.cxKey] as num?)?.toDouble(),
+      cy: (data[ArChannelContract.cyKey] as num?)?.toDouble(),
     );
   }
 

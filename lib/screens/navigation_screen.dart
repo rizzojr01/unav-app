@@ -464,7 +464,14 @@ class _NavigationScreenState extends State<NavigationScreen>
           ? settings.debugAssetPath!.split('/').last
           : 'query.jpg';
 
-      final result = await ApiService.unavNavigation(fixedBytes, filename);
+      final result = await ApiService.unavNavigation(
+        fixedBytes,
+        filename,
+        cx: nativeCapture?.cx,
+        cy: nativeCapture?.cy,
+        fx: nativeCapture?.fx,
+        fy: nativeCapture?.fy,
+      );
       if (!mounted) return;
 
       // Persist this VPR query into the active TrialRecorder session.

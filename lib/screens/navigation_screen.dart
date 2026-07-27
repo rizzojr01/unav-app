@@ -121,6 +121,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   double _lastVisualHeading = 0.0;
   bool _showCompass = false;
   bool _menuOpen = false;
+  bool _topHidden = false;
 
   // ---- Low-latency UI sound (audioplayers) ----
   late final AudioPlayer _playerSend;
@@ -1442,23 +1443,75 @@ class _NavigationScreenState extends State<NavigationScreen>
               SafeArea(
                 child: Align(
                   alignment: Alignment.topCenter,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      GuidanceBanner(
-                        trackingState:
-                            _navigationController.session.trackingState,
-                        message:
-                            _navigationController.session.latestGuidanceMessage,
-                        remainingDistancePx:
-                            _navigationController.session.remainingDistancePx,
-                        distanceToNextWaypointPx: _navigationController
-                            .session
-                            .distanceToNextWaypointPx,
-                      ),
-                      if (_buildAudioStatusBanner() case final banner?) banner,
-                    ],
-                  ),
+                  child: _topHidden
+                      ? GestureDetector(
+                          onTap: () => setState(() => _topHidden = false),
+                          child: Container(
+                            margin: const EdgeInsets.only(top: 6),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.expand_more,
+                                    color: Colors.white, size: 18),
+                                SizedBox(width: 6),
+                                Text('Show guidance',
+                                    style: TextStyle(
+                                        color: Colors.white, fontSize: 13)),
+                              ],
+                            ),
+                          ),
+                        )
+                      : Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            GuidanceBanner(
+                              trackingState:
+                                  _navigationController.session.trackingState,
+                              message: _navigationController
+                                  .session.latestGuidanceMessage,
+                              remainingDistancePx: _navigationController
+                                  .session.remainingDistancePx,
+                              distanceToNextWaypointPx: _navigationController
+                                  .session.distanceToNextWaypointPx,
+                            ),
+                            if (_buildAudioStatusBanner() case final banner?)
+                              banner,
+                            const SizedBox(height: 6),
+                            GestureDetector(
+                              onTap: () => setState(() => _topHidden = true),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 6,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.55),
+                                  borderRadius: BorderRadius.circular(16),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.expand_less,
+                                        color: Colors.white70, size: 16),
+                                    SizedBox(width: 4),
+                                    Text('Hide',
+                                        style: TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 12)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                 ),
               ),
               if (_isLoading)

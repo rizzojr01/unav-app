@@ -120,6 +120,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   bool _playFullCommands = false;
   double _lastVisualHeading = 0.0;
   bool _showCompass = false;
+  bool _menuOpen = false;
 
   // ---- Low-latency UI sound (audioplayers) ----
   late final AudioPlayer _playerSend;
@@ -1147,6 +1148,153 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
   }
 
+  Widget _menuIconButton({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.7),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, color: Colors.white, size: 24),
+      ),
+    );
+  }
+
+  Widget _menuChip({
+    required IconData icon,
+    required String label,
+    VoidCallback? onTap,
+    bool active = false,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.7),
+            borderRadius: BorderRadius.circular(22),
+            border: active
+                ? Border.all(color: Colors.pinkAccent, width: 2)
+                : null,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: Colors.white, size: 18),
+              const SizedBox(width: 8),
+              Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFirstPersonToggle() {
+    return GestureDetector(
+      onTap: () => setState(() => _firstPerson = !_firstPerson),
+      child: Consumer<SettingsProvider>(
+        builder: (context, settings, _) {
+          ImageProvider? imageProvider;
+          if (settings.avatarFile != null) {
+            imageProvider = FileImage(settings.avatarFile!);
+          } else if (settings.avatarUrl != null &&
+              settings.avatarUrl!.isNotEmpty) {
+            imageProvider = NetworkImage(settings.avatarUrl!);
+          }
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 250),
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: _firstPerson ? Colors.pink : Colors.transparent,
+                width: 3.5,
+              ),
+            ),
+            child: CircleAvatar(
+              radius: 22,
+              backgroundColor: Colors.grey[300],
+              backgroundImage: imageProvider,
+              child: (imageProvider == null)
+                  ? const Icon(Icons.person, color: Colors.white, size: 22)
+                  : null,
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSnapToggle() {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _snapToRoute = !_snapToRoute;
+          _navigationController.snapToRoute = _snapToRoute;
+        });
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: _snapToRoute
+              ? Colors.lime.withValues(alpha: 0.85)
+              : Colors.black.withValues(alpha: 0.7),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.route, size: 18, color: Colors.white),
+            const SizedBox(width: 8),
+            const Text('Snap to route', style: TextStyle(color: Colors.white, fontSize: 13)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTopRightMenu() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _menuIconButton(
+          icon: _menuOpen ? Icons.close : Icons.tune,
+          onTap: () => setState(() => _menuOpen = !_menuOpen),
+        ),
+        if (_menuOpen) ...[
+          const SizedBox(height: 10),
+          _buildRelocalizeButton(),
+          const SizedBox(height: 8),
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.7),
+              shape: BoxShape.circle,
+            ),
+            child: _buildPlaybackToggleButton(),
+          ),
+          const SizedBox(height: 8),
+          _buildSnapToggle(),
+          const SizedBox(height: 8),
+          _menuChip(
+            icon: Icons.explore,
+            label: 'Compass',
+            active: _showCompass,
+            onTap: () => setState(() => _showCompass = !_showCompass),
+          ),
+          _buildFirstPersonToggle(),
+        ],
+      ],
+    );
+  }
+
   Widget _buildPlaybackToggleButton() {
     return IconButton(
       icon: Icon(
@@ -1286,103 +1434,10 @@ class _NavigationScreenState extends State<NavigationScreen>
                 ),
               SafeArea(
                 child: Align(
-                  alignment: Alignment.bottomCenter,
-                  child: Padding(
-                    padding: const EdgeInsets.only(bottom: 24),
-                    child: _buildRelocalizeButton(),
-                  ),
-                ),
-              ),
-              SafeArea(
-                child: Align(
                   alignment: Alignment.topCenter,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      GestureDetector(
-                        onTap: () =>
-                            setState(() => _firstPerson = !_firstPerson),
-                        child: Consumer<SettingsProvider>(
-                          builder: (context, settings, _) {
-                            ImageProvider? imageProvider;
-                            if (settings.avatarFile != null) {
-                              imageProvider = FileImage(settings.avatarFile!);
-                            } else if (settings.avatarUrl != null &&
-                                settings.avatarUrl!.isNotEmpty) {
-                              imageProvider = NetworkImage(settings.avatarUrl!);
-                            }
-
-                            return AnimatedContainer(
-                              duration: const Duration(milliseconds: 250),
-                              padding: const EdgeInsets.all(2),
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: _firstPerson
-                                      ? Colors.pink
-                                      : Colors.transparent,
-                                  width: 3.5,
-                                ),
-                              ),
-                              child: CircleAvatar(
-                                radius: 24,
-                                backgroundColor: Colors.grey[300],
-                                backgroundImage: imageProvider,
-                                child: (imageProvider == null)
-                                    ? const Icon(
-                                        Icons.person,
-                                        color: Colors.white,
-                                        size: 24,
-                                      )
-                                    : null,
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      // ---- Snap-to-route toggle ----
-                      GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _snapToRoute = !_snapToRoute;
-                            _navigationController.snapToRoute = _snapToRoute;
-                          });
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: _snapToRoute
-                                ? Colors.lime.withValues(alpha: 0.85)
-                                : Colors.black54,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.route,
-                                size: 14,
-                                color: Colors.white,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Snap',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
                       GuidanceBanner(
                         trackingState:
                             _navigationController.session.trackingState,
@@ -1417,13 +1472,13 @@ class _NavigationScreenState extends State<NavigationScreen>
                 ),
               ),
 
-              // Playback mode toggle button (top-right)
+              // Secondary controls tucked into a top-right menu
               SafeArea(
                 child: Align(
                   alignment: Alignment.topRight,
                   child: Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: _buildPlaybackToggleButton(),
+                    padding: const EdgeInsets.only(right: 8, top: 4),
+                    child: _buildTopRightMenu(),
                   ),
                 ),
               ),

@@ -117,36 +117,8 @@ class FloorplanPathPainter extends CustomPainter {
         canvas.drawCircle(pathPoints.last, pathWidth * 1.3 / scaleFactor, Paint()..color = Colors.red);
       }
 
-      // Draw heading arrow from current position
-      if (headingAngleDeg != null && pathPoints.isNotEmpty) {
-        final Offset startPt = pathPoints.first;
-        final double theta = headingAngleDeg! * math.pi / 180.0;
-        final Offset arrowTip = startPt + Offset(
-          arrowLength * math.cos(theta),
-          arrowLength * math.sin(theta),
-        );
-        final Paint arrowPaint = Paint()
-          ..color = Colors.blue
-          ..strokeWidth = pathWidth * 0.8 / scaleFactor
-          ..style = PaintingStyle.stroke
-          ..strokeCap = StrokeCap.round;
-        canvas.drawLine(startPt, arrowTip, arrowPaint);
-
-        const double headLen = 12.0;
-        const double headAngle = 25 * math.pi / 180.0;
-        final Offset headLeft = arrowTip +
-            Offset(
-              -headLen * math.cos(theta - headAngle),
-              -headLen * math.sin(theta - headAngle),
-            );
-        final Offset headRight = arrowTip +
-            Offset(
-              -headLen * math.cos(theta + headAngle),
-              -headLen * math.sin(theta + headAngle),
-            );
-        canvas.drawLine(arrowTip, headLeft, arrowPaint);
-        canvas.drawLine(arrowTip, headRight, arrowPaint);
-      }
+      // No heading arrow in first-person view: the map is rotated so the
+      // walking direction is always up, an arrow adds nothing.
       canvas.restore();
       return;
     }

@@ -49,6 +49,8 @@ class NavigationController {
   NavigationSession _session = const NavigationSession();
   StreamSubscription<dynamic>? _poseSubscription;
   _ArTrackingAlignment? _arTrackingAlignment;
+  LocalizedPose? _lastSmoothedPose;
+  int? _lastSmoothedAtMs;
   String _languageCode = 'en';
   String _distanceUnit = 'meter';
 
@@ -88,10 +90,10 @@ class NavigationController {
 
     await _poseSubscription?.cancel();
     _poseSubscription = poseProvider.watchPose().listen((pose) {
-      final localizedPose = _transformTrackedPose(
+      final localizedPose = _limitJump(_transformTrackedPose(
         pose: pose,
         routeFloorKey: route.floorKey,
-      );
+      ));
 
       final nextSession = _session.copyWith(
         currentPose: localizedPose,
@@ -151,6 +153,10 @@ class NavigationController {
     _languageCode = languageCode;
     _distanceUnit = distanceUnit;
     final parsed = _parser.parse(rawResult, snapToRoute: snapToRoute);
+    // A fresh server fix is an intentional re-anchor: reset the jump limiter
+    // so it does not fight the new position.
+    _lastSmoothedPose = parsed.pose;
+    _lastSmoothedAtMs = DateTime.now().millisecondsSinceEpoch;
     final shouldRefreshFloorplan = parsed.mapKey != _session.mapKey;
     final nextSession = _session.copyWith(
       route: parsed.route,
@@ -334,6 +340,53 @@ class NavigationController {
     return distanceMeters >= 10
         ? '${distanceMeters.round()} meters'
         : '${distanceMeters.toStringAsFixed(1)} meters';
+  }
+
+  /// Cap displayed motion at a plausible walking speed. ARKit occasionally
+  /// re-localizes its world map and the native pose translates by metres in
+  /// a single update; without this cap that shows up as a teleport on the
+  /// floorplan (and corrupts distance-to-go). Genuine walking (~1.4 m/s) is
+  /// never clamped; a glitch glides toward the new position at _maxSpeedMps
+  /// instead of jumping, and converges within a couple of seconds.
+  static const double _maxSpeedMps = 2.5;
+
+  LocalizedPose _limitJump(LocalizedPose pose) {
+    final mpp = _arTrackingAlignment?.metersPerPixel;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastSmoothedPose;
+    final lastMs = _lastSmoothedAtMs;
+    if (mpp == null ||
+        mpp <= 0 ||
+        last == null ||
+        lastMs == null ||
+        last.floorKey != pose.floorKey) {
+      _lastSmoothedPose = pose;
+      _lastSmoothedAtMs = nowMs;
+      return pose;
+    }
+    final dtSeconds = math.max(0.05, (nowMs - lastMs) / 1000.0);
+    final maxPx = (_maxSpeedMps * dtSeconds) / mpp;
+    final dx = pose.x - last.x;
+    final dy = pose.y - last.y;
+    final dist = math.sqrt(dx * dx + dy * dy);
+    if (dist <= maxPx) {
+      _lastSmoothedPose = pose;
+      _lastSmoothedAtMs = nowMs;
+      return pose;
+    }
+    final scale = maxPx / dist;
+    final clamped = LocalizedPose(
+      floorKey: pose.floorKey,
+      x: last.x + dx * scale,
+      y: last.y + dy * scale,
+      z: pose.z,
+      heading: pose.heading,
+      confidence: pose.confidence,
+      timestamp: pose.timestamp,
+    );
+    _lastSmoothedPose = clamped;
+    _lastSmoothedAtMs = nowMs;
+    return clamped;
   }
 
   LocalizedPose _transformTrackedPose({

@@ -37,7 +37,11 @@ class NavigationResultParser {
 
     var pose = parseFloorplanPose(result, mapKey);
     if (snapToRoute && pose != null && routeNet.isNotEmpty) {
-      final snapped = snapToRouteNetwork(Offset(pose.x, pose.y), routeNet);
+      final snapped = snapToRouteNetwork(
+        Offset(pose.x, pose.y),
+        routeNet,
+        thresholdPx: 72,
+      );
       pose = LocalizedPose(
         floorKey: pose.floorKey,
         x: snapped.dx,

@@ -2,7 +2,6 @@ import 'dart:math' as math;
 import 'dart:ui';
 
 import '../../../../core/interfaces/path_tracker.dart';
-import '../../../../core/utils/route_snap.dart';
 import '../../../../core/models/audio_cue_direction.dart';
 import '../../../../core/models/guidance_event.dart';
 import '../../../../core/models/navigation_route.dart';
@@ -43,10 +42,6 @@ class PathTrackingService implements PathTracker {
     }
 
     final rawPoint = Offset(pose.x, pose.y);
-    final routeNet = route.routeNetworkSegments;
-    final currentPoint = snapToRoute && routeNet.isNotEmpty
-        ? snapToRouteNetwork(rawPoint, routeNet)
-        : rawPoint;
     final fixedPolyline = <Offset>[
       Offset(anchor.x, anchor.y),
       ...route.points,
@@ -66,7 +61,17 @@ class PathTrackingService implements PathTracker {
       fallbackPx: _turnNowThresholdPx,
       thresholdMeters: _turnNowThresholdMeters,
     );
-    final projection = _projectToPath(fixedPolyline, currentPoint);
+    // Track along the navigation path itself, not the whole rail network:
+    // projecting onto the nearest network segment teleports at corners and
+    // parallel rails. The windowed search keeps the projection near the
+    // previously tracked segment; global fallback handles true off-route.
+    final projection = _projectToPath(
+      fixedPolyline,
+      rawPoint,
+      previousSegmentIndex: session.currentSegmentIndex,
+      windowThresholdPx: offRouteThresholdPx,
+    );
+    final currentPoint = snapToRoute ? projection.projectedPoint : rawPoint;
     final projectedWaypointIndex =
         projection.segmentIndex.clamp(0, route.points.length - 1);
     var activeWaypointIndex = projectedWaypointIndex;
@@ -86,7 +91,7 @@ class PathTrackingService implements PathTracker {
         (route.points[activeWaypointIndex] - currentPoint).distance;
     final offRouteDirection = _computeOffRouteDirection(
       headingDeg: pose.heading,
-      currentPoint: currentPoint,
+      currentPoint: rawPoint,
       projectedPoint: projection.projectedPoint,
     );
     final offRouteSeverity = _normalizedOffRouteSeverity(
@@ -207,12 +212,36 @@ class PathTrackingService implements PathTracker {
     return total;
   }
 
-  _PathProjection _projectToPath(List<Offset> path, Offset currentPose) {
+  _PathProjection _projectToPath(
+    List<Offset> path,
+    Offset currentPose, {
+    int? previousSegmentIndex,
+    double? windowThresholdPx,
+  }) {
+    if (previousSegmentIndex != null &&
+        windowThresholdPx != null &&
+        path.length >= 2) {
+      final lo = math.max(0, previousSegmentIndex - 1);
+      final hi = math.min(path.length - 2, previousSegmentIndex + 2);
+      if (lo <= hi) {
+        final local = _projectToRange(path, currentPose, lo, hi);
+        if (local.distanceToPathPx <= windowThresholdPx) return local;
+      }
+    }
+    return _projectToRange(path, currentPose, 0, path.length - 2);
+  }
+
+  _PathProjection _projectToRange(
+    List<Offset> path,
+    Offset currentPose,
+    int lo,
+    int hi,
+  ) {
     double bestDistanceSq = double.infinity;
     Offset bestProjection = path.first;
-    int bestSegmentIndex = 0;
+    int bestSegmentIndex = lo;
 
-    for (int i = 0; i < path.length - 1; i++) {
+    for (int i = lo; i <= hi; i++) {
       final a = path[i];
       final b = path[i + 1];
       final ab = b - a;

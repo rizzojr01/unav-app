@@ -122,6 +122,7 @@ class _NavigationScreenState extends State<NavigationScreen>
   bool _showCompass = false;
   bool _menuOpen = false;
   bool _topHidden = false;
+  bool _showRailway = true;
 
   // ---- Low-latency UI sound (audioplayers) ----
   late final AudioPlayer _playerSend;
@@ -1297,6 +1298,12 @@ class _NavigationScreenState extends State<NavigationScreen>
             active: _showCompass,
             onTap: () => setState(() => _showCompass = !_showCompass),
           ),
+          _menuChip(
+            icon: Icons.route,
+            label: 'Railway',
+            active: _showRailway,
+            onTap: () => setState(() => _showRailway = !_showRailway),
+          ),
           _buildFirstPersonToggle(),
         ],
       ],
@@ -1419,11 +1426,13 @@ class _NavigationScreenState extends State<NavigationScreen>
                               .currentPose
                               ?.heading,
                           firstPersonView: _firstPerson,
-                          routeNetworkSegments: _navigationController
-                                  .session
-                                  .route
-                                  ?.routeNetworkSegments ??
-                              const [],
+                          routeNetworkSegments: _showRailway
+                              ? (_navigationController
+                                      .session
+                                      .route
+                                      ?.routeNetworkSegments ??
+                                  const [])
+                              : const [],
                         ),
                       ),
                   ],
